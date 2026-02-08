@@ -1,0 +1,64 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "ExecutionReport",
+    "type": "object",
+    "properties": {
+        "exec_id": {
+            "type": "string"
+        },
+        "order_id": {
+            "type": "string"
+        },
+        "type": {
+            "type": "string",
+            "enum": [
+                "NEW",
+                "CANCELED",
+                "REPLACED",
+                "REJECTED",
+                "TRADE",
+                "STATUS"
+            ]
+        },
+        "status": {
+            "type": "string",
+            "enum": [
+                "NEW",
+                "PENDING_SUBMIT",
+                "LIVE",
+                "PARTIALLY_FILLED",
+                "FILLED",
+                "CANCEL_PENDING",
+                "CANCELED",
+                "REPLACE_PENDING",
+                "REJECTED"
+            ]
+        },
+        "last_qty": {
+            "type": "integer"
+        },
+        "last_px": {
+            "type": "number"
+        },
+        "leaves_qty": {
+            "type": "integer"
+        },
+        "cum_qty": {
+            "type": "integer"
+        },
+        "avg_px": {
+            "type": "number"
+        },
+        "timestamp": {
+            "type": "string",
+            "format": "date-time"
+        }
+    },
+    "required": [
+        "exec_id",
+        "order_id",
+        "type",
+        "status",
+        "timestamp"
+    ]
+}

@@ -1,0 +1,12 @@
+go 1.25.7
+
+use (
+	./ai-explain
+	./audit-sink
+	./common
+	./oms-core
+	./order-gateway
+	./policy-service
+	./pretrade-controls
+	./venue-sim
+)

@@ -1,0 +1,36 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "RiskDecision",
+    "type": "object",
+    "properties": {
+        "decision_id": {
+            "type": "string"
+        },
+        "order_id": {
+            "type": "string"
+        },
+        "decision": {
+            "type": "string",
+            "enum": [
+                "APPROVED",
+                "REJECTED"
+            ]
+        },
+        "reason": {
+            "type": "string"
+        },
+        "policy_version": {
+            "type": "string"
+        },
+        "timestamp": {
+            "type": "string",
+            "format": "date-time"
+        }
+    },
+    "required": [
+        "decision_id",
+        "order_id",
+        "decision",
+        "timestamp"
+    ]
+}

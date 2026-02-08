@@ -1,0 +1,17 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "OrderCommand",
+  "type": "object",
+  "properties": {
+    "command_id": { "type": "string" },
+    "type": { "type": "string", "enum": ["NEW", "CANCEL", "REPLACE"] },
+    "order_id": { "type": "string" },
+    "client_id": { "type": "string" },
+    "symbol": { "type": "string" },
+    "side": { "type": "string", "enum": ["BUY", "SELL"] },
+    "quantity": { "type": "integer" },
+    "price": { "type": "number" },
+    "timestamp": { "type": "string", "format": "date-time" }
+  },
+  "required": ["command_id", "type", "order_id", "client_id", "timestamp"]
+}
