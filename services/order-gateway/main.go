@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -13,8 +15,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/atlas/services/common/db"
 	"github.com/atlas/services/common/kafka"
 	"github.com/atlas/services/common/model"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 )
@@ -36,23 +43,29 @@ var (
 	}
 	mu sync.Mutex
 
+	// Persistence
+	dynamoClient     *db.DynamoClient
+	tableBalances    = "atlas_balances"
+	tableIdempotency = "atlas_idempotency"
+
 	// Balance Manager State (Default demo values)
 	initialUSD = 1000000.0
 	initialBTC = 50.0
-
-	accounts = map[string]*model.Account{
-		"ACC_CHILD_1": {
-			USD: model.Balance{Available: initialUSD, Reserved: 0.0},
-			BTC: model.Balance{Available: initialBTC, Reserved: 0.0},
-		},
-	}
-	accMu sync.Mutex
 )
 
 func main() {
+	ctx := context.Background()
+
 	// Initialize Kafka Producer
 	producer = kafka.NewProducer(kafkaBrokers, topicCommands)
 	defer producer.Close()
+
+	// Initialize DynamoDB Client (connecting to local DynamoDB for demo)
+	dynamo, err := db.NewDynamoClient(ctx, "http://localhost:8000")
+	if err != nil {
+		log.Fatalf("Failed to connect to DynamoDB: %v", err)
+	}
+	dynamoClient = dynamo
 
 	// Start Kafka Consumer for Exec Reports (to broadcast to WS + Update Balances)
 	go startConsumer()
@@ -64,7 +77,7 @@ func main() {
 	// HTTP Server
 	mux := http.NewServeMux()
 	mux.HandleFunc("/orders", enableCors(handleOrderEntry))
-	mux.HandleFunc("/balances", enableCors(handleBalances)) // New Endpoint
+	mux.HandleFunc("/balances", enableCors(handleBalances))
 	mux.HandleFunc("/ws", handleWebSocket)
 	mux.HandleFunc("/health", enableCors(handleHealth))
 
@@ -86,9 +99,9 @@ func main() {
 	<-quit
 	log.Println("Shutting down...")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := server.Shutdown(ctx); err != nil {
+	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Fatal("Server forced to shutdown:", err)
 	}
 }
@@ -99,21 +112,65 @@ func handleBalances(w http.ResponseWriter, r *http.Request) {
 		accountID = "ACC_CHILD_1" // Default for demo
 	}
 
-	accMu.Lock()
-	defer accMu.Unlock()
-
-	acc, exists := accounts[accountID]
-	if !exists {
-		log.Printf("[GATEWAY] Initializing new account: %s", accountID)
-		acc = &model.Account{
-			USD: model.Balance{Available: initialUSD, Reserved: 0.0},
-			BTC: model.Balance{Available: initialBTC, Reserved: 0.0},
-		}
-		accounts[accountID] = acc
+	ctx := r.Context()
+	acc, err := getAccount(ctx, accountID)
+	if err != nil {
+		log.Printf("[GATEWAY] Error getting balance for %s: %v", accountID, err)
+		http.Error(w, "Error fetching balances", http.StatusInternalServerError)
+		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(acc)
+}
+
+func getAccount(ctx context.Context, accountID string) (*model.Account, error) {
+	result, err := dynamoClient.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(tableBalances),
+		Key: map[string]types.AttributeValue{
+			"account_id": &types.AttributeValueMemberS{Value: accountID},
+		},
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	if result.Item == nil {
+		log.Printf("[GATEWAY] Initializing new account in DynamoDB: %s", accountID)
+		acc := &model.Account{
+			USD: model.Balance{Available: initialUSD, Reserved: 0.0},
+			BTC: model.Balance{Available: initialBTC, Reserved: 0.0},
+		}
+		item, _ := attributevalue.MarshalMap(map[string]interface{}{
+			"account_id":    accountID,
+			"usd_available": acc.USD.Available,
+			"usd_reserved":  acc.USD.Reserved,
+			"btc_available": acc.BTC.Available,
+			"btc_reserved":  acc.BTC.Reserved,
+			"updated_at":    time.Now().Unix(),
+		})
+		_, err = dynamoClient.PutItem(ctx, &dynamodb.PutItemInput{
+			TableName: aws.String(tableBalances),
+			Item:      item,
+		})
+		return acc, err
+	}
+
+	var data struct {
+		USDAvailable float64 `dynamodbav:"usd_available"`
+		USDReserved  float64 `dynamodbav:"usd_reserved"`
+		BTCAvailable float64 `dynamodbav:"btc_available"`
+		BTCReserved  float64 `dynamodbav:"btc_reserved"`
+	}
+	if err := attributevalue.UnmarshalMap(result.Item, &data); err != nil {
+		return nil, err
+	}
+
+	return &model.Account{
+		USD: model.Balance{Available: data.USDAvailable, Reserved: data.USDReserved},
+		BTC: model.Balance{Available: data.BTCAvailable, Reserved: data.BTCReserved},
+	}, nil
 }
 
 func handleOrderEntry(w http.ResponseWriter, r *http.Request) {
@@ -122,26 +179,33 @@ func handleOrderEntry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Read body to string for debugging
+	ctx := r.Context()
 	bodyBytes, _ := io.ReadAll(r.Body)
-	log.Printf("Raw Body: %s", string(bodyBytes))
-	// Restore body for decoder
 	r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 
 	var cmd model.OrderCommand
 	if err := json.NewDecoder(r.Body).Decode(&cmd); err != nil {
-		log.Printf("Decode Error: %v", err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	log.Printf("[GATEWAY] Received order: order_id=%s symbol=%s side=%s qty=%f px=%f",
-		cmd.OrderID, cmd.Symbol, cmd.Side, cmd.QuantityVal, cmd.Price)
+	// Idempotency Check using CommandID
+	if cmd.CommandID != "" {
+		isNew, err := checkIdempotency(ctx, cmd.CommandID)
+		if err != nil {
+			log.Printf("[GATEWAY] Idempotency check failed: %v", err)
+			http.Error(w, "System Error", http.StatusInternalServerError)
+			return
+		}
+		if !isNew {
+			log.Printf("[GATEWAY] Duplicate command detected: %s", cmd.CommandID)
+			w.WriteHeader(http.StatusAccepted)
+			json.NewEncoder(w).Encode(map[string]string{"status": "duplicate", "command_id": cmd.CommandID})
+			return
+		}
+	}
 
 	// Enrich command
-	if cmd.CommandID == "" {
-		cmd.CommandID = uuid.New().String()
-	}
 	if cmd.OrderID == "" {
 		cmd.OrderID = uuid.New().String()
 	}
@@ -149,73 +213,99 @@ func handleOrderEntry(w http.ResponseWriter, r *http.Request) {
 		cmd.Timestamp = time.Now().UTC()
 	}
 
-	// PRE-TRADE CHECK & RESERVATION
-	// For demo, assume single account
+	// PRE-TRADE CHECK & PERSISTENT RESERVATION (DynamoDB)
 	accountID := "ACC_CHILD_1"
-	accMu.Lock()
-	acc, ok := accounts[accountID]
-	if !ok {
-		log.Printf("[GATEWAY] Initializing new account during order: %s", accountID)
-		acc = &model.Account{
-			USD: model.Balance{Available: initialUSD, Reserved: 0.0},
-			BTC: model.Balance{Available: initialBTC, Reserved: 0.0},
-		}
-		accounts[accountID] = acc
+	if err := reserveBalances(ctx, accountID, cmd); err != nil {
+		log.Printf("[GATEWAY] Reservation failed for %s: %v", accountID, err)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
-
-	if cmd.Side == model.OrderSideBuy {
-		cost := cmd.QuantityVal * cmd.Price
-		if acc.USD.Available < cost {
-			accMu.Unlock()
-			log.Printf("Rejected BUY: Insufficient Funds. Req: %f, Avail: %f", cost, acc.USD.Available)
-			http.Error(w, "Insufficient Funds", http.StatusBadRequest)
-			return
-		}
-		acc.USD.Available -= cost
-		acc.USD.Reserved += cost
-	} else {
-		qty := cmd.QuantityVal
-		if acc.BTC.Available < qty {
-			accMu.Unlock()
-			log.Printf("Rejected SELL: Insufficient Asset. Req: %f, Avail: %f", qty, acc.BTC.Available)
-			http.Error(w, "Insufficient Asset", http.StatusBadRequest)
-			return
-		}
-		acc.BTC.Available -= qty
-		acc.BTC.Reserved += qty
-	}
-	accMu.Unlock()
-	log.Printf("Order Accepted. Balances Updated.")
 
 	// Send to Kafka
 	key := []byte(cmd.OrderID)
 	value, _ := json.Marshal(cmd)
-
-	// Create context with timeout for Kafka write
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	defer cancel()
-
 	if err := producer.Produce(ctx, key, value); err != nil {
 		log.Printf("[GATEWAY] Failed to produce order_id=%s to Kafka: %v", cmd.OrderID, err)
-		// Undo reservation on failure
-		accMu.Lock()
-		if cmd.Side == model.OrderSideBuy {
-			cost := cmd.QuantityVal * cmd.Price
-			acc.USD.Available += cost
-			acc.USD.Reserved -= cost
-		} else {
-			acc.BTC.Available += cmd.QuantityVal
-			acc.BTC.Reserved -= cmd.QuantityVal
-		}
-		accMu.Unlock()
-
+		undoReservation(ctx, accountID, cmd)
 		http.Error(w, "Failed to submit order", http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("[GATEWAY] Order submitted to Kafka: order_id=%s topic=%s", cmd.OrderID, topicCommands)
 	w.WriteHeader(http.StatusAccepted)
 	json.NewEncoder(w).Encode(map[string]string{"status": "accepted", "order_id": cmd.OrderID, "command_id": cmd.CommandID})
+}
+
+func checkIdempotency(ctx context.Context, commandID string) (bool, error) {
+	_, err := dynamoClient.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName:           aws.String(tableIdempotency),
+		Item:                map[string]types.AttributeValue{"request_id": &types.AttributeValueMemberS{Value: commandID}},
+		ConditionExpression: aws.String("attribute_not_exists(request_id)"),
+	})
+	if err != nil {
+		var condErr *types.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+func reserveBalances(ctx context.Context, accountID string, cmd model.OrderCommand) error {
+	cost := cmd.QuantityVal * cmd.Price
+
+	update := &dynamodb.UpdateItemInput{
+		TableName: aws.String(tableBalances),
+		Key: map[string]types.AttributeValue{
+			"account_id": &types.AttributeValueMemberS{Value: accountID},
+		},
+	}
+
+	if cmd.Side == model.OrderSideBuy {
+		update.UpdateExpression = aws.String("SET usd_available = usd_available - :cost, usd_reserved = usd_reserved + :cost")
+		update.ConditionExpression = aws.String("usd_available >= :cost")
+		update.ExpressionAttributeValues = map[string]types.AttributeValue{
+			":cost": &types.AttributeValueMemberN{Value: fmt.Sprintf("%f", cost)},
+		}
+	} else {
+		update.UpdateExpression = aws.String("SET btc_available = btc_available - :qty, btc_reserved = btc_reserved + :qty")
+		update.ConditionExpression = aws.String("btc_available >= :qty")
+		update.ExpressionAttributeValues = map[string]types.AttributeValue{
+			":qty": &types.AttributeValueMemberN{Value: fmt.Sprintf("%f", cmd.QuantityVal)},
+		}
+	}
+
+	_, err := dynamoClient.UpdateItem(ctx, update)
+	if err != nil {
+		var condErr *types.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			return fmt.Errorf("insufficient funds/inventory")
+		}
+		return err
+	}
+	return nil
+}
+
+func undoReservation(ctx context.Context, accountID string, cmd model.OrderCommand) {
+	cost := cmd.QuantityVal * cmd.Price
+	update := &dynamodb.UpdateItemInput{
+		TableName: aws.String(tableBalances),
+		Key: map[string]types.AttributeValue{
+			"account_id": &types.AttributeValueMemberS{Value: accountID},
+		},
+	}
+	if cmd.Side == model.OrderSideBuy {
+		update.UpdateExpression = aws.String("SET usd_available = usd_available + :cost, usd_reserved = usd_reserved - :cost")
+		update.ExpressionAttributeValues = map[string]types.AttributeValue{
+			":cost": &types.AttributeValueMemberN{Value: fmt.Sprintf("%f", cost)},
+		}
+	} else {
+		update.UpdateExpression = aws.String("SET btc_available = btc_available + :qty, btc_reserved = btc_reserved - :qty")
+		update.ExpressionAttributeValues = map[string]types.AttributeValue{
+			":qty": &types.AttributeValueMemberN{Value: fmt.Sprintf("%f", cmd.QuantityVal)},
+		}
+	}
+	dynamoClient.UpdateItem(ctx, update)
 }
 
 func handleWebSocket(w http.ResponseWriter, r *http.Request) {
@@ -231,8 +321,6 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	log.Println("New WebSocket client connected")
 
-	// Keep connection alive, maybe implement ping/pong later
-	// For now just wait until close
 	for {
 		if _, _, err := ws.NextReader(); err != nil {
 			mu.Lock()
@@ -272,22 +360,11 @@ func startConsumer() {
 	log.Println("Started consumer for exec.reports")
 
 	err := consumer.Consume(context.Background(), func(ctx context.Context, msg kafka.Message) error {
-		// Update Balances based on executions
 		var report model.ExecutionReport
 		if err := json.Unmarshal(msg.Value, &report); err == nil {
 			updateBalances(report)
 		}
 
-		log.Printf("[GATEWAY] Received exec report: order_id=%s status=%s filled=%f avg_px=%f",
-			report.OrderID, report.Status, report.CumQty, report.AvgPx)
-
-		// Just forward the message to all connected clients
-		mu.Lock()
-		numClients := len(clients)
-		mu.Unlock()
-
-		log.Printf("[GATEWAY] 📡 Broadcasting exec report to %d WebSocket client(s): order_id=%s status=%s",
-			numClients, report.OrderID, report.Status)
 		broadcast <- msg.Value
 		return nil
 	})
@@ -298,132 +375,73 @@ func startConsumer() {
 }
 
 func updateBalances(report model.ExecutionReport) {
-	// For demo MVP, we only care about account ACC_CHILD_1
-	// In real app, account ID would be on the order
 	accountID := "ACC_CHILD_1"
+	ctx := context.Background()
 
-	accMu.Lock()
-	defer accMu.Unlock()
-
-	acc, ok := accounts[accountID]
-	if !ok {
-		return
-	}
-
-	// Handle Settlement
 	if report.Status == model.OrderStatusFilled || report.Status == model.OrderStatusPartiallyFilled {
-		// Idempotency Check
-		if acc.ProcessedIds == nil {
-			acc.ProcessedIds = make(map[string]bool)
-		}
-		if acc.ProcessedIds[report.ExecID] {
-			log.Printf("Skipping duplicate settlement for ExecID: %s", report.ExecID)
-			return
-		}
-		acc.ProcessedIds[report.ExecID] = true
-
 		fillQty := report.LastQty
 		fillPx := report.LastPx
-
-		if fillQty <= 0 {
-			return
-		}
-
-		// LIMIT PRICE lookup is required for correct BUY settlement (refunds)
-		// We trust report.Price is populated with the original Limit Price
 		limitPx := report.Price
 		if limitPx == 0 {
-			// Fallback: If for some reason Limit Px is missing, use Fill Px (no refund)
 			limitPx = fillPx
-			log.Printf("WARNING: Missing Limit Price in Report for Order %s. Using FillPx for settlement.", report.OrderID)
+		}
+
+		update := &dynamodb.UpdateItemInput{
+			TableName: aws.String(tableBalances),
+			Key: map[string]types.AttributeValue{
+				"account_id": &types.AttributeValueMemberS{Value: accountID},
+			},
 		}
 
 		if report.Side == model.OrderSideBuy {
-			// BUY SETTLEMENT
-			// 1. Release Reservation (Cost at Limit Price)
 			reservedAmount := fillQty * limitPx
-			acc.USD.Reserved -= reservedAmount
-
-			// 2. Calculate Actual Cost
 			actualCost := fillQty * fillPx
-
-			// 3. Refund Difference (if Limit > Fill) to Available
-			// Logic: We took 'reservedAmount' from Available. We only spent 'actualCost'.
-			// So we return (reservedAmount - actualCost) to Available.
-			// Net change to Available = -actualCost + (Limit - Fill)*Qty ??
-			// No, simpler: Available was already deduced by Reserve.
-			// Now we just give back the over-reserved amount.
-			// Wait, "Available" should NOT increase by cost.
-			// Initial: Avail = 100, Res = 0.
-			// Reserve 50: Avail = 50, Res = 50.
-			// Fill 50 @ 40 (Cost 2000). Reserved was 50*1 (if limit=1? no limit=50).
-			// Example: Buy 1 BTC @ 50k. Avail=50k, Res=50k.
-			// Fill 1 BTC @ 49k. Actual Cost = 49k.
-			// Release Res: Res -= 50k (-> 0).
-			// Refund: 50k - 49k = 1k. Avail += 1k (-> 51k). Total Eq = 51k + 1BTC. Correct.
-
 			refund := reservedAmount - actualCost
-			acc.USD.Available += refund
 
-			// 4. Credit Asset
-			acc.BTC.Available += fillQty
-
+			update.UpdateExpression = aws.String("SET usd_reserved = usd_reserved - :res, usd_available = usd_available + :ref, btc_available = btc_available + :qty")
+			update.ExpressionAttributeValues = map[string]types.AttributeValue{
+				":res": &types.AttributeValueMemberN{Value: fmt.Sprintf("%f", reservedAmount)},
+				":ref": &types.AttributeValueMemberN{Value: fmt.Sprintf("%f", refund)},
+				":qty": &types.AttributeValueMemberN{Value: fmt.Sprintf("%f", fillQty)},
+			}
 		} else {
-			// SELL SETTLEMENT
-			// 1. Release Reservation (Asset)
-			acc.BTC.Reserved -= fillQty
-
-			// 2. Credit Proceeds to USD Available
 			proceeds := fillQty * fillPx
-			acc.USD.Available += proceeds
+			update.UpdateExpression = aws.String("SET btc_reserved = btc_reserved - :qty, usd_available = usd_available + :proc")
+			update.ExpressionAttributeValues = map[string]types.AttributeValue{
+				":qty":  &types.AttributeValueMemberN{Value: fmt.Sprintf("%f", fillQty)},
+				":proc": &types.AttributeValueMemberN{Value: fmt.Sprintf("%f", proceeds)},
+			}
 		}
+		dynamoClient.UpdateItem(ctx, update)
 
 	} else if report.Status == model.OrderStatusCanceled || report.Status == model.OrderStatusRejected {
-		// Idempotency Check for Cancels?
-		// ExecIDs for cancels are also unique.
-		if acc.ProcessedIds == nil {
-			acc.ProcessedIds = make(map[string]bool)
-		}
-		if acc.ProcessedIds[report.ExecID] {
-			log.Printf("Skipping duplicate release for ExecID: %s", report.ExecID)
-			return
-		}
-		acc.ProcessedIds[report.ExecID] = true
-
-		// RELEASE LEAVES
 		leaves := report.LeavesQty
 		if report.Status == model.OrderStatusRejected {
 			leaves = report.OrderQty
 		}
 
 		if leaves > 0 {
-			if report.Side == model.OrderSideBuy {
-				// Refund USD Reservation
-				limitPx := report.Price
-				acc.USD.Reserved -= leaves * limitPx
-				acc.USD.Available += leaves * limitPx
-			} else {
-				// Refund BTC Reservation
-				acc.BTC.Reserved -= leaves
-				acc.BTC.Available += leaves
+			update := &dynamodb.UpdateItemInput{
+				TableName: aws.String(tableBalances),
+				Key: map[string]types.AttributeValue{
+					"account_id": &types.AttributeValueMemberS{Value: accountID},
+				},
 			}
+			if report.Side == model.OrderSideBuy {
+				limitPx := report.Price
+				amount := leaves * limitPx
+				update.UpdateExpression = aws.String("SET usd_reserved = usd_reserved - :amt, usd_available = usd_available + :amt")
+				update.ExpressionAttributeValues = map[string]types.AttributeValue{
+					":amt": &types.AttributeValueMemberN{Value: fmt.Sprintf("%f", amount)},
+				}
+			} else {
+				update.UpdateExpression = aws.String("SET btc_reserved = btc_reserved - :qty, btc_available = btc_available + :qty")
+				update.ExpressionAttributeValues = map[string]types.AttributeValue{
+					":qty": &types.AttributeValueMemberN{Value: fmt.Sprintf("%f", leaves)},
+				}
+			}
+			dynamoClient.UpdateItem(ctx, update)
 		}
-	}
-
-	// INVARIANT CHECKS
-	if acc.USD.Reserved < 0 {
-		log.Printf("[CRITICAL] Negative USD Reserved for %s: %f. Resetting to 0.", accountID, acc.USD.Reserved)
-		acc.USD.Reserved = 0
-	}
-	if acc.BTC.Reserved < 0 {
-		log.Printf("[CRITICAL] Negative BTC Reserved for %s: %f. Resetting to 0.", accountID, acc.BTC.Reserved)
-		acc.BTC.Reserved = 0
-	}
-	if acc.USD.Available < 0 {
-		log.Printf("[CRITICAL] Negative USD Available for %s: %f.", accountID, acc.USD.Available)
-	}
-	if acc.BTC.Available < 0 {
-		log.Printf("[CRITICAL] Negative BTC Available for %s: %f.", accountID, acc.BTC.Available)
 	}
 }
 
@@ -431,10 +449,7 @@ func startMarketDataConsumer() {
 	consumer := kafka.NewConsumer(kafkaBrokers, topicMarketData, "order-gateway-md-group")
 	defer consumer.Close()
 
-	log.Println("Started consumer for market.data")
-
 	err := consumer.Consume(context.Background(), func(ctx context.Context, msg kafka.Message) error {
-		// Broadcast market data to all clients
 		broadcast <- msg.Value
 		return nil
 	})
@@ -446,13 +461,10 @@ func startMarketDataConsumer() {
 
 func enableCors(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("CORS Middleware: %s %s", r.Method, r.URL.Path)
-		// Set CORS headers
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE")
 		w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization")
 
-		// Handle preflight
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusOK)
 			return

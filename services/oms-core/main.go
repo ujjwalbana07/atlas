@@ -3,15 +3,22 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/atlas/services/common/db"
 	"github.com/atlas/services/common/kafka"
 	"github.com/atlas/services/common/model"
 	"github.com/atlas/services/oms-core/fsm"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/google/uuid"
 )
 
@@ -22,18 +29,26 @@ var (
 	topicExecs    = "exec.reports"
 
 	producer *kafka.Producer
-	// In-memory state (for MVP, ideally backed by DynamoDB/Snapshots)
-	orders = make(map[string]*fsm.StateMachine)
+
+	// Persistence
+	dynamoClient *db.DynamoClient
+	tableOrders  = "atlas_orders"
 )
 
 func main() {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	producer = kafka.NewProducer(kafkaBrokers, topicEvents)
 	defer producer.Close()
 
-	// We also need another producer for exec reports, or reuse with different topic?
-	// The producer wrapper is per-topic (simple wrapper).
-	// Let's create a second one or strictly follow event sourcing where Gateway listens to events?
-	// Spec says "Exec reports" topic exists. OMS should produce to it.
+	// Initialize DynamoDB Client
+	dynamo, err := db.NewDynamoClient(ctx, "http://localhost:8000")
+	if err != nil {
+		log.Fatalf("Failed to connect to DynamoDB: %v", err)
+	}
+	dynamoClient = dynamo
+
 	execProducer := kafka.NewProducer(kafkaBrokers, topicExecs)
 	defer execProducer.Close()
 
@@ -47,9 +62,6 @@ func main() {
 	log.Println("OMS Core started...")
 
 	// Handle graceful shutdown
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
 	go func() {
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
@@ -71,13 +83,14 @@ func main() {
 			log.Printf("[OMS] Received exec report: order_id=%s status=%s cum_qty=%f avg_px=%f",
 				report.OrderID, report.Status, report.CumQty, report.AvgPx)
 
-			// Update state based on report
-			sm, exists := orders[report.OrderID]
-			if !exists {
-				// Order may not exist if OMS restarted - just log and continue
-				log.Printf("[OMS] ⚠️  WARNING: Order %s not found in memory (may have restarted or exec report arrived before ORDER_CREATED), skipping state update", report.OrderID)
+			// Update state based on report in DynamoDB
+			oldStatus, err := getOrderStatus(ctx, report.OrderID)
+			if err != nil {
+				log.Printf("[OMS] ⚠️  WARNING: Order %s not found in DynamoDB, skipping state update", report.OrderID)
 				return nil
 			}
+
+			sm := fsm.StateMachine{State: oldStatus}
 
 			var eventType string
 			switch report.Status {
@@ -101,15 +114,19 @@ func main() {
 			}
 
 			if eventType != "" {
-				// Update State
-				oldState := sm.State
+				// Update State in DynamoDB
+				newStatus := oldStatus
 				if eventType == "ORDER_FILLED" {
-					sm.State = model.OrderStatusFilled
-					log.Printf("[OMS] ✅ STATE TRANSITION: order_id=%s %s → FILLED (fill_qty=%f fill_px=%f)",
-						report.OrderID, oldState, report.CumQty, report.AvgPx)
+					newStatus = model.OrderStatusFilled
 				} else if eventType == "ORDER_CANCELED" {
-					sm.State = model.OrderStatusCanceled
-					log.Printf("[OMS] STATE TRANSITION: order_id=%s %s → CANCELED", report.OrderID, oldState)
+					newStatus = model.OrderStatusCanceled
+				} else if eventType == "ORDER_LIVE" {
+					newStatus = model.OrderStatusLive
+				}
+
+				if newStatus != oldStatus {
+					updateOrderStatus(ctx, report.OrderID, newStatus, report.CumQty, report.AvgPx)
+					log.Printf("[OMS] ✅ STATE TRANSITION: order_id=%s %s → %s", report.OrderID, oldStatus, newStatus)
 				}
 
 				// Emit Event to orders.events topic
@@ -146,11 +163,11 @@ func main() {
 		log.Printf("[OMS] Processing command: type=%s order_id=%s symbol=%s side=%s qty=%f px=%f",
 			cmd.Type, cmd.OrderID, cmd.Symbol, cmd.Side, cmd.QuantityVal, cmd.Price)
 
-		// 1. Load or Initialize State
-		sm, exists := orders[cmd.OrderID]
-		if !exists {
-			sm = fsm.NewStateMachine()
-			orders[cmd.OrderID] = sm
+		// 1. Load State from DynamoDB
+		currentStatus, getErr := getOrderStatus(ctx, cmd.OrderID)
+		sm := fsm.NewStateMachine()
+		if getErr == nil {
+			sm.State = currentStatus
 		}
 
 		// 2. Process Command
@@ -183,9 +200,9 @@ func main() {
 		}
 
 		if eventType != "" {
-			// Update state
+			// Update state in DynamoDB
 			if eventType == "ORDER_CREATED" {
-				sm.State = model.OrderStatusPendingSubmit
+				createOrder(ctx, cmd)
 			}
 
 			// Produce Event (Canonical State)
@@ -215,6 +232,56 @@ func main() {
 	if err != nil {
 		log.Fatal("[OMS] Command consumer failed:", err)
 	}
+}
+
+func getOrderStatus(ctx context.Context, orderID string) (model.OrderStatus, error) {
+	result, err := dynamoClient.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(tableOrders),
+		Key:       map[string]types.AttributeValue{"order_id": &types.AttributeValueMemberS{Value: orderID}},
+	})
+	if err != nil || result.Item == nil {
+		return "", errors.New("not found")
+	}
+	var order struct {
+		Status string `dynamodbav:"status"`
+	}
+	attributevalue.UnmarshalMap(result.Item, &order)
+	return model.OrderStatus(order.Status), nil
+}
+
+func createOrder(ctx context.Context, cmd model.OrderCommand) {
+	item, _ := attributevalue.MarshalMap(map[string]interface{}{
+		"order_id":       cmd.OrderID,
+		"account_id":     "ACC_CHILD_1",
+		"symbol":         cmd.Symbol,
+		"side":           string(cmd.Side),
+		"price":          cmd.Price,
+		"qty":            cmd.QuantityVal,
+		"filled_qty":     0.0,
+		"avg_fill_price": 0.0,
+		"status":         string(model.OrderStatusPendingSubmit),
+		"created_at":     time.Now().Unix(),
+		"updated_at":     time.Now().Unix(),
+	})
+	dynamoClient.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: aws.String(tableOrders),
+		Item:      item,
+	})
+}
+
+func updateOrderStatus(ctx context.Context, orderID string, status model.OrderStatus, filledQty float64, avgPrice float64) {
+	dynamoClient.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName:                aws.String(tableOrders),
+		Key:                      map[string]types.AttributeValue{"order_id": &types.AttributeValueMemberS{Value: orderID}},
+		UpdateExpression:         aws.String("SET #s = :s, filled_qty = :fq, avg_fill_price = :ap, updated_at = :u"),
+		ExpressionAttributeNames: map[string]string{"#s": "status"},
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":s":  &types.AttributeValueMemberS{Value: string(status)},
+			":fq": &types.AttributeValueMemberN{Value: fmt.Sprintf("%f", filledQty)},
+			":ap": &types.AttributeValueMemberN{Value: fmt.Sprintf("%f", avgPrice)},
+			":u":  &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", time.Now().Unix())},
+		},
+	})
 }
 
 func sendExecReport(p *kafka.Producer, cmd model.OrderCommand, execType string, status model.OrderStatus, reason string) {
