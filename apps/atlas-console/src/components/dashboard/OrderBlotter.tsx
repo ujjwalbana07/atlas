@@ -85,7 +85,7 @@ export function OrderBlotter({ data }: { data: OrderRow[] }) {
                         <tr key={headerGroup.id}>
                             {headerGroup.headers.map((header) => {
                                 return (
-                                    <th key={header.id} className="h-10 px-2 text-left font-medium text-muted-foreground">
+                                    <th key={header.id} className="h-8 px-2 text-left font-medium text-muted-foreground uppercase text-[10px]">
                                         {flexRender(
                                             header.column.columnDef.header,
                                             header.getContext()
@@ -105,7 +105,7 @@ export function OrderBlotter({ data }: { data: OrderRow[] }) {
                                 className="border-b transition-colors hover:bg-muted/50"
                             >
                                 {row.getVisibleCells().map((cell) => (
-                                    <td key={cell.id} className="p-2 align-middle">
+                                    <td key={cell.id} className="p-1 px-2 align-middle">
                                         {flexRender(cell.column.columnDef.cell, cell.getContext())}
                                     </td>
                                 ))}
@@ -113,8 +113,8 @@ export function OrderBlotter({ data }: { data: OrderRow[] }) {
                         ))
                     ) : (
                         <tr>
-                            <td colSpan={columns.length} className="h-24 text-center">
-                                No results.
+                            <td colSpan={columns.length} className="h-12 text-center text-xs text-muted-foreground">
+                                No live orders.
                             </td>
                         </tr>
                     )}

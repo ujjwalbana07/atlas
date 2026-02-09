@@ -36,11 +36,14 @@ var (
 	}
 	mu sync.Mutex
 
-	// Balance Manager State
+	// Balance Manager State (Default demo values)
+	initialUSD = 1000000.0
+	initialBTC = 50.0
+
 	accounts = map[string]*model.Account{
 		"ACC_CHILD_1": {
-			USD: model.Balance{Available: 100000.0, Reserved: 0.0},
-			BTC: model.Balance{Available: 100.0, Reserved: 0.0},
+			USD: model.Balance{Available: initialUSD, Reserved: 0.0},
+			BTC: model.Balance{Available: initialBTC, Reserved: 0.0},
 		},
 	}
 	accMu sync.Mutex
@@ -101,8 +104,12 @@ func handleBalances(w http.ResponseWriter, r *http.Request) {
 
 	acc, exists := accounts[accountID]
 	if !exists {
-		http.Error(w, "Account not found", http.StatusNotFound)
-		return
+		log.Printf("[GATEWAY] Initializing new account: %s", accountID)
+		acc = &model.Account{
+			USD: model.Balance{Available: initialUSD, Reserved: 0.0},
+			BTC: model.Balance{Available: initialBTC, Reserved: 0.0},
+		}
+		accounts[accountID] = acc
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -148,9 +155,12 @@ func handleOrderEntry(w http.ResponseWriter, r *http.Request) {
 	accMu.Lock()
 	acc, ok := accounts[accountID]
 	if !ok {
-		accMu.Unlock()
-		http.Error(w, "Account not found", http.StatusBadRequest)
-		return
+		log.Printf("[GATEWAY] Initializing new account during order: %s", accountID)
+		acc = &model.Account{
+			USD: model.Balance{Available: initialUSD, Reserved: 0.0},
+			BTC: model.Balance{Available: initialBTC, Reserved: 0.0},
+		}
+		accounts[accountID] = acc
 	}
 
 	if cmd.Side == model.OrderSideBuy {

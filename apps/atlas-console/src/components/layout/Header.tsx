@@ -1,12 +1,14 @@
-import { LayoutDashboard, Settings, Activity, User } from 'lucide-react'
+import { LayoutDashboard, Settings, Activity, User, Sun, Moon } from 'lucide-react'
 import { NavLink } from 'react-router-dom'
 import { useUserContext } from '../../context/UserContext'
+import { useTheme } from '../../context/ThemeContext'
 
 export default function Header() {
     const { clientId, account, strategy, setContext } = useUserContext()
+    const { theme, toggleTheme } = useTheme()
 
     return (
-        <header className="border-b border-border bg-card px-6 py-3 flex items-center justify-between shrink-0">
+        <header className="border-b border-border bg-card px-6 py-3 flex items-center justify-between shrink-0 transition-colors duration-300">
             <div className="flex items-center gap-8">
                 <div className="flex items-center gap-2 font-bold text-xl text-primary">
                     <Activity className="h-6 w-6 text-blue-500" />
@@ -45,6 +47,15 @@ export default function Header() {
             </div>
 
             <div className="flex items-center gap-4">
+                {/* Theme Toggle */}
+                <button
+                    onClick={toggleTheme}
+                    className="p-2 hover:bg-muted/80 rounded-full transition-colors cursor-pointer text-muted-foreground mr-2"
+                    title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}
+                >
+                    {theme === 'light' ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
+                </button>
+
                 {/* Context Selector */}
                 <div className="flex items-center gap-2 text-xs border rounded-md px-2 py-1 bg-muted/50">
                     <User className="h-3 w-3 text-muted-foreground" />

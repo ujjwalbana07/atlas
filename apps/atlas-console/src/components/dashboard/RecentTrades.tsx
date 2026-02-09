@@ -8,7 +8,7 @@ interface RecentTradesProps {
 type TradeLimit = 25 | 50 | 100 | 'All'
 
 export function RecentTrades({ trades }: RecentTradesProps) {
-    const [limit, setLimit] = useState<TradeLimit>(50)
+    const [limit, setLimit] = useState<TradeLimit>(25)
 
     if (trades.length === 0) {
         return (
@@ -18,10 +18,10 @@ export function RecentTrades({ trades }: RecentTradesProps) {
         )
     }
 
-    const displayTrades = limit === 'All' ? trades : trades.slice(0, limit)
+    const displayTrades = limit === 'All' ? trades : Array.isArray(trades) ? trades.slice(0, limit) : []
 
     return (
-        <div className="flex flex-col h-full max-h-[320px] p-4 overflow-hidden">
+        <div className="flex flex-col h-full max-h-[260px] p-4 overflow-hidden bg-card">
             <div className="flex items-center justify-between mb-2">
                 <h3 className="font-semibold text-sm">Recent Trades</h3>
                 <div className="flex items-center gap-2">

@@ -1,11 +1,11 @@
 import { OrderBlotter } from "./OrderBlotter"
 import { OrderEntry } from "./OrderEntry"
 import { useMarketData } from "../../context/MarketDataContext"
-import { Activity, Settings, LayoutDashboard } from "lucide-react"
+import { Activity, Settings, LayoutDashboard, ChevronDown, ChevronUp } from "lucide-react"
 import { MarketDepth } from "./MarketDepth"
 import { RecentTrades } from "./RecentTrades"
 import { SettingsModal } from "./SettingsModal"
-import { useState } from "react"
+import { useState, useMemo } from "react"
 import { PriceTrendChart } from "../analytics/PriceTrendChart"
 import { OrderFlowChart } from "../analytics/OrderFlowChart"
 import { ExposureChart } from "../analytics/ExposureChart"
@@ -13,23 +13,56 @@ import { PaperPnLChart } from "../analytics/PaperPnLChart"
 import { OrderDistributionChart } from "../analytics/OrderDistributionChart"
 import { SpreadChart } from "../analytics/SpreadChart"
 
+// New imports
+import { TraderControlCenter } from "./TraderControlCenter"
+import { computeVolatility, computeSpread, computeLiquidity, computeTrendBias } from "../../lib/marketMetrics"
+
 export default function Dashboard() {
     const { orders, isConnected, l2Data, trades } = useMarketData()
     const [isSettingsOpen, setIsSettingsOpen] = useState(false)
+    const [isTccOpen, setIsTccOpen] = useState(true) // For mobile accordion
 
-    // For demo, just pick the first symbol or BTC-USD
-    const activeSymbol = "BTC-USD"
+    // Lifted Order Entry State
+    const [orderForm, setOrderForm] = useState({
+        symbol: "BTC-USD",
+        quantity: "1.0",
+        price: "50000.00",
+        side: "BUY" as "BUY" | "SELL"
+    })
+
+    const handlePriceSuggest = (suggestedPrice: number) => {
+        setOrderForm(prev => ({ ...prev, price: suggestedPrice.toFixed(2) }))
+    }
+
+    // Pick active symbol
+    const activeSymbol = orderForm.symbol
     const currentL2 = l2Data[activeSymbol]
+
+    // Compute Market Metrics
+    const metrics = useMemo(() => {
+        return {
+            volatility: computeVolatility(trades),
+            spread: computeSpread(currentL2),
+            liquidity: computeLiquidity(currentL2),
+            trendBias: computeTrendBias(trades)
+        }
+    }, [trades, currentL2])
+
+    const bestBid = currentL2?.bids?.[0]?.price || 0
+    const bestAsk = currentL2?.asks?.[0]?.price || 0
 
     return (
         <div className="flex flex-col h-full gap-4">
             <SettingsModal open={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />
             {/* Header / Toolbar */}
-            <div className="flex items-center justify-between p-2 border-b">
-                <div className="flex items-center gap-2 font-bold text-xl">
-                    <LayoutDashboard className="h-6 w-6 text-primary" />
-                    ATLAS <span className="text-muted-foreground font-normal text-sm">PRO</span>
+            <div className="flex items-center justify-between p-2 border-b transition-colors duration-300">
+                <div className="flex items-center gap-6">
+                    <div className="flex items-center gap-2 font-bold text-xl">
+                        <LayoutDashboard className="h-6 w-6 text-primary" />
+                        ATLAS <span className="text-muted-foreground font-normal text-sm">PRO</span>
+                    </div>
                 </div>
+
                 <div className="flex items-center gap-4">
                     <button
                         className="p-2 hover:bg-secondary rounded-full transition-colors cursor-pointer"
@@ -51,69 +84,92 @@ export default function Dashboard() {
                 </div>
             </div>
 
-            {/* Top Section: Trading Console (Grid) */}
-            <div className="grid grid-cols-12 gap-4">
-                {/* [Left Col] Market Data & Charts (9 cols) */}
-                <div className="col-span-12 lg:col-span-9 flex flex-col gap-4">
-                    {/* Top Row: Price Chart & Order Book */}
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 h-[350px]">
-                        <PriceTrendChart className="col-span-2 h-full" />
-                        <div className="col-span-1 rounded-lg border bg-card text-card-foreground shadow-sm">
-                            <MarketDepth data={currentL2} />
+            <div className="flex flex-col gap-4 overflow-y-auto pr-2 custom-scrollbar">
+                {/* Top Section: Trading Console (Grid) */}
+                <div className="grid grid-cols-12 gap-4">
+                    {/* [Left Col] Market Data & Charts (9 cols) */}
+                    <div className="col-span-12 lg:col-span-9 flex flex-col gap-4">
+                        {/* Top Row: Price Chart & Order Book */}
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                            <PriceTrendChart className="col-span-2 h-[350px]" />
+                            <div className="col-span-1 rounded-lg border bg-card text-card-foreground shadow-sm h-[350px]">
+                                <MarketDepth data={currentL2} />
+                            </div>
+                        </div>
+
+                        {/* Bottom Row: Blotter */}
+                        <div className="rounded-lg border bg-card text-card-foreground shadow-sm p-4 flex flex-col flex-1 min-h-[300px]">
+                            <div className="flex items-center justify-between mb-2">
+                                <h3 className="font-semibold text-lg flex items-center gap-2">
+                                    <Activity className="h-4 w-4" />
+                                    Live Orders
+                                </h3>
+                                <span className="text-muted-foreground text-xs">{orders.length} orders</span>
+                            </div>
+                            <div className="flex-1 overflow-y-auto min-h-0">
+                                <OrderBlotter data={orders} />
+                            </div>
                         </div>
                     </div>
 
-                    {/* Bottom Row: Blotter */}
-                    <div className="rounded-lg border bg-card text-card-foreground shadow-sm p-4 flex flex-col max-h-[260px] lg:max-h-[280px]">
-                        <div className="flex items-center justify-between mb-2">
-                            <h3 className="font-semibold text-lg flex items-center gap-2">
-                                <Activity className="h-4 w-4" />
-                                Live Orders
-                            </h3>
-                            <span className="text-muted-foreground text-xs">{orders.length} orders</span>
+                    {/* [Right Col] Entry, TCC & Trades (3 cols) */}
+                    <div className="col-span-12 lg:col-span-3 flex flex-col gap-4">
+                        <OrderEntry
+                            initialForm={orderForm}
+                            onFormChange={setOrderForm}
+                        />
+
+                        {/* TCC - Accordion on mobile, regular on desktop */}
+                        <div className="lg:block hidden">
+                            <TraderControlCenter
+                                metrics={metrics}
+                                side={orderForm.side}
+                                bestBid={bestBid}
+                                bestAsk={bestAsk}
+                                price={parseFloat(orderForm.price) || 0}
+                                onPriceSuggest={handlePriceSuggest}
+                            />
                         </div>
-                        <div className="flex-1 overflow-y-auto min-h-0">
-                            <OrderBlotter data={orders} />
+
+                        <div className="lg:hidden block border rounded-lg overflow-hidden">
+                            <button
+                                onClick={() => setIsTccOpen(!isTccOpen)}
+                                className="w-full flex items-center justify-between p-3 bg-muted/50 font-semibold text-sm"
+                            >
+                                Trader Control Center
+                                {isTccOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                            </button>
+                            {isTccOpen && (
+                                <TraderControlCenter
+                                    metrics={metrics}
+                                    side={orderForm.side}
+                                    bestBid={bestBid}
+                                    bestAsk={bestAsk}
+                                    price={parseFloat(orderForm.price) || 0}
+                                    onPriceSuggest={handlePriceSuggest}
+                                />
+                            )}
+                        </div>
+
+                        <div className="rounded-lg border bg-card text-card-foreground shadow-sm h-[200px] overflow-hidden">
+                            <RecentTrades trades={trades} />
                         </div>
                     </div>
                 </div>
 
-                {/* [Right Col] Entry & Trades (3 cols) */}
-                <div className="col-span-12 lg:col-span-3 flex flex-col gap-4">
-                    <OrderEntry />
-
-                    <div className="flex-1 rounded-lg border bg-card text-card-foreground shadow-sm min-h-[300px]">
-                        <RecentTrades trades={trades} />
-                    </div>
-                </div>
-            </div>
-
-            {/* Analytics / Insights Section */}
-            <div className="flex flex-col gap-4 mt-4">
-                <h3 className="text-lg font-semibold tracking-tight px-1">Analytics & Insights</h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pb-8">
-                    {/* 1. Order Flow */}
-                    <div className="h-[250px]">
-                        <OrderFlowChart />
-                    </div>
-                    {/* 2. Spread & Mid */}
-                    <div className="h-[250px]">
-                        <SpreadChart />
-                    </div>
-                    {/* 3. Account Exposure */}
-                    <div className="h-[250px]">
-                        <ExposureChart />
-                    </div>
-                    {/* 4. Paper PnL */}
-                    <div className="h-[250px]">
-                        <PaperPnLChart />
-                    </div>
-                    {/* 5. Order State Distribution */}
-                    <div className="h-[250px]">
-                        <OrderDistributionChart />
+                {/* Analytics / Insights Section */}
+                <div className="flex flex-col gap-4">
+                    <h3 className="text-lg font-semibold tracking-tight px-1 uppercase text-[10px] tracking-[0.2em] text-muted-foreground">Analytics & Insights</h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pb-8">
+                        <div className="h-[250px]"><OrderFlowChart /></div>
+                        <div className="h-[250px]"><SpreadChart /></div>
+                        <div className="h-[250px]"><ExposureChart /></div>
+                        <div className="h-[250px]"><PaperPnLChart /></div>
+                        <div className="h-[250px]"><OrderDistributionChart /></div>
                     </div>
                 </div>
             </div>
         </div>
     )
 }
+
