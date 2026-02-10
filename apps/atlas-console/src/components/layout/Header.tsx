@@ -12,9 +12,15 @@ export default function Header() {
     return (
         <header className="border-b border-border bg-card px-6 py-3 flex items-center justify-between shrink-0 transition-colors duration-300">
             <div className="flex items-center gap-8">
-                <div className="flex items-center gap-2 font-bold text-xl text-primary">
-                    <Activity className="h-6 w-6 text-blue-500" />
-                    <span>ATLAS</span>
+                <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-2 font-black text-xl text-primary">
+                        <Activity className="h-6 w-6 text-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.3)]" />
+                        <span>ATLAS</span>
+                    </div>
+                    <div className="h-4 w-px bg-border/50 hidden lg:block" />
+                    <span className="text-[10px] font-bold tracking-[0.1em] text-muted-foreground/60 uppercase hidden xl:block italic">
+                        Advanced Trading Lifecycle & Audit System
+                    </span>
                 </div>
 
                 <nav className="flex items-center gap-6 text-sm font-medium text-muted-foreground">
