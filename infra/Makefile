@@ -34,5 +34,37 @@ test: ## Run tests
 	@echo "Running tests..."
 	cd ../services && go test ./...
 
+aws-up: ## Start ATLAS in AWS Mode (DynamoDB + S3) - Foreground
+	@echo "Starting ATLAS in AWS Mode..."
+	export AWS_REGION=us-east-1; \
+	export ATLAS_DDB_BALANCES_TABLE=atlas_balances; \
+	export ATLAS_DDB_ORDERS_TABLE=atlas_orders; \
+	export ATLAS_DDB_IDEMPOTENCY_TABLE=atlas_idempotency; \
+	export ATLAS_AUDIT_S3_BUCKET=atlas-audit-demo; \
+	$(MAKE) up; \
+	echo "Starting backend services in foreground..."; \
+	tmux new-session -d -s atlas-aws \
+		"cd ../services/order-gateway && go run main.go" \; \
+		split-window -v "cd ../services/oms-core && go run main.go" \; \
+		split-window -h "cd ../services/venue-sim && go run main.go" \; \
+		split-window -v "cd ../services/audit-exporter && go run main.go" \; \
+		attach-session -t atlas-aws
+
+aws-up-bg: ## Start ATLAS in AWS Mode (DynamoDB + S3) - Background
+	@echo "Starting ATLAS in AWS Mode (Background)..."
+	export AWS_REGION=us-east-1; \
+	export ATLAS_DDB_BALANCES_TABLE=atlas_balances; \
+	export ATLAS_DDB_ORDERS_TABLE=atlas_orders; \
+	export ATLAS_DDB_IDEMPOTENCY_TABLE=atlas_idempotency; \
+	export ATLAS_AUDIT_S3_BUCKET=atlas-audit-demo; \
+	$(MAKE) up; \
+	cd ../services/order-gateway && go run main.go > ../../tmp/order-gateway.log 2>&1 & \
+	cd ../services/oms-core && go run main.go > ../../tmp/oms-core.log 2>&1 & \
+	cd ../services/venue-sim && go run main.go > ../../tmp/venue-sim.log 2>&1 & \
+	cd ../services/audit-exporter && go run main.go > ../../tmp/audit-exporter.log 2>&1 & \
+	echo "Services started in background. Logs in infra/tmp/*.log"
+	@echo "URLs: Console: http://localhost:5173"
+	@echo "Run verification: ./scripts/aws_verify.sh"
+
 clean: ## Clean up artifacts
 	rm -rf tmp

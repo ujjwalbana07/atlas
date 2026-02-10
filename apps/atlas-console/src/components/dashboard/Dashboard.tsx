@@ -113,43 +113,78 @@ export default function Dashboard() {
                 </div>
             </div>
 
-            <div className="flex flex-col gap-4 overflow-y-auto pr-2 custom-scrollbar">
-                {/* Top Section: Trading Console (Grid) */}
-                <div className="grid grid-cols-12 gap-4">
-                    {/* [Left Col] Market Data & Charts (9 cols) */}
-                    <div className="col-span-12 lg:col-span-9 flex flex-col gap-4">
-                        {/* Top Row: Price Chart & Order Book */}
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                            <PriceTrendChart className="col-span-2 h-[350px]" />
-                            <div className="col-span-1 rounded-lg border bg-card text-card-foreground shadow-sm h-[350px]">
-                                <MarketDepth data={currentL2} />
-                            </div>
-                        </div>
-
-                        {/* Bottom Row: Blotter */}
-                        <div className="rounded-lg border bg-card text-card-foreground shadow-sm p-4 flex flex-col h-[250px]">
-                            <div className="flex items-center justify-between mb-2">
-                                <h3 className="font-semibold text-lg flex items-center gap-2">
-                                    <Activity className="h-4 w-4" />
-                                    Live Orders
-                                </h3>
-                                <span className="text-muted-foreground text-xs">{orders.length} orders</span>
-                            </div>
-                            <div className="flex-1 overflow-y-auto min-h-0 custom-scrollbar">
-                                <OrderBlotter data={orders} />
-                            </div>
+            <div className="flex flex-col lg:flex-row gap-4 overflow-y-auto pr-2 custom-scrollbar pb-20">
+                {/* [Main Column] Market Data & Charts */}
+                <div className="flex-1 flex flex-col gap-4 min-w-0">
+                    {/* Top Row: Price Chart & Order Book */}
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 shrink-0">
+                        <PriceTrendChart className="md:col-span-2 h-[350px]" />
+                        <div className="col-span-1 rounded-lg border bg-card text-card-foreground shadow-sm h-[350px]">
+                            <MarketDepth data={currentL2} />
                         </div>
                     </div>
 
-                    {/* [Right Col] Entry, TCC & Trades (3 cols) */}
-                    <div className="col-span-12 lg:col-span-3 flex flex-col gap-4">
-                        <OrderEntry
-                            initialForm={orderForm}
-                            onFormChange={setOrderForm}
-                        />
+                    {/* Live Orders Section - Now fully dynamic */}
+                    <div className="rounded-lg border bg-card text-card-foreground shadow-sm p-4 flex flex-col h-auto min-h-0">
+                        <div className="flex items-center justify-between mb-2">
+                            <h3 className="font-semibold text-lg flex items-center gap-2">
+                                <Activity className="h-4 w-4 text-primary" />
+                                Live Orders
+                            </h3>
+                            <span className="text-muted-foreground text-[10px] bg-muted px-2 py-0.5 rounded-full font-bold">
+                                {orders.length} ACTIVE
+                            </span>
+                        </div>
+                        <div className="max-h-[320px] overflow-y-auto custom-scrollbar">
+                            <OrderBlotter data={orders} />
+                        </div>
+                    </div>
 
-                        {/* TCC - Accordion on mobile, regular on desktop */}
-                        <div className="lg:block hidden">
+                    {/* Analytics / Intelligence Hub - Now sits directly below Content */}
+                    <div className="flex flex-col gap-4 mt-4">
+                        <div className="flex items-center gap-4 px-1">
+                            <h3 className="text-lg font-bold tracking-tight uppercase text-[10px] tracking-[0.3em] text-primary">Intelligence Hub</h3>
+                            <div className="h-[1px] flex-1 bg-gradient-to-r from-primary/50 to-transparent"></div>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                            <OrderDistributionChart />
+                            <OrderFlowChart />
+                            <PaperPnLChart />
+                            <SpreadChart />
+                            <ExposureChart />
+                        </div>
+                    </div>
+                </div>
+
+                {/* [Right Rail] Entry, TCC & Trades */}
+                <div className="lg:w-[320px] xl:w-[360px] flex flex-col gap-4 shrink-0">
+                    <OrderEntry
+                        initialForm={orderForm}
+                        onFormChange={setOrderForm}
+                    />
+
+                    {/* TCC - Accordion on mobile, regular on desktop */}
+                    <div className="lg:block hidden">
+                        <TraderControlCenter
+                            metrics={metrics}
+                            side={orderForm.side}
+                            bestBid={bestBid}
+                            bestAsk={bestAsk}
+                            price={parseFloat(orderForm.price) || 0}
+                            onPriceSuggest={handlePriceSuggest}
+                        />
+                    </div>
+
+                    <div className="lg:hidden block border rounded-lg overflow-hidden shrink-0">
+                        <button
+                            onClick={() => setIsTccOpen(!isTccOpen)}
+                            className="w-full flex items-center justify-between p-3 bg-muted/50 font-semibold text-sm"
+                        >
+                            Trader Control Center
+                            {isTccOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                        </button>
+                        {isTccOpen && (
                             <TraderControlCenter
                                 metrics={metrics}
                                 side={orderForm.side}
@@ -158,50 +193,13 @@ export default function Dashboard() {
                                 price={parseFloat(orderForm.price) || 0}
                                 onPriceSuggest={handlePriceSuggest}
                             />
-                        </div>
-
-                        <div className="lg:hidden block border rounded-lg overflow-hidden">
-                            <button
-                                onClick={() => setIsTccOpen(!isTccOpen)}
-                                className="w-full flex items-center justify-between p-3 bg-muted/50 font-semibold text-sm"
-                            >
-                                Trader Control Center
-                                {isTccOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-                            </button>
-                            {isTccOpen && (
-                                <TraderControlCenter
-                                    metrics={metrics}
-                                    side={orderForm.side}
-                                    bestBid={bestBid}
-                                    bestAsk={bestAsk}
-                                    price={parseFloat(orderForm.price) || 0}
-                                    onPriceSuggest={handlePriceSuggest}
-                                />
-                            )}
-                        </div>
-
-                        <div className="rounded-lg border bg-card text-card-foreground shadow-sm h-[250px] overflow-hidden flex flex-col">
-                            <div className="flex-1 overflow-y-auto custom-scrollbar">
-                                <RecentTrades trades={trades} />
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                {/* Analytics / Insights Section */}
-                <div className="flex flex-col gap-4 mt-8 pb-32">
-                    <div className="flex items-center gap-4 px-1">
-                        <h3 className="text-lg font-bold tracking-tight uppercase text-[10px] tracking-[0.3em] text-primary">Intelligence Hub</h3>
-                        <div className="h-[1px] flex-1 bg-gradient-to-r from-primary/50 to-transparent"></div>
+                        )}
                     </div>
 
-                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-8">
-                        {/* Status is now prioritized */}
-                        <OrderDistributionChart />
-                        <OrderFlowChart />
-                        <PaperPnLChart />
-                        <SpreadChart />
-                        <ExposureChart />
+                    <div className="rounded-lg border bg-card text-card-foreground shadow-sm h-auto max-h-[300px] overflow-hidden flex flex-col shrink-0">
+                        <div className="overflow-y-auto custom-scrollbar min-h-0">
+                            <RecentTrades trades={trades} />
+                        </div>
                     </div>
                 </div>
             </div>

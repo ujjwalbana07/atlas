@@ -78,7 +78,7 @@ export function OrderBlotter({ data }: { data: OrderRow[] }) {
     })
 
     return (
-        <div className="rounded-md border">
+        <div className="w-full">
             <table className="w-full text-sm">
                 <thead className="border-b bg-muted/50 sticky top-0 z-10">
                     {table.getHeaderGroups().map((headerGroup) => (
@@ -113,7 +113,7 @@ export function OrderBlotter({ data }: { data: OrderRow[] }) {
                         ))
                     ) : (
                         <tr>
-                            <td colSpan={columns.length} className="h-12 text-center text-xs text-muted-foreground">
+                            <td colSpan={columns.length} className="h-10 text-center text-xs text-muted-foreground">
                                 No live orders.
                             </td>
                         </tr>
