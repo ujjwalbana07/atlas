@@ -104,9 +104,17 @@ export default function Footer() {
                 <div className="flex items-center gap-10">
                     {/* Left: Branding */}
                     <div className="flex items-center gap-5">
-                        <div className="flex items-center gap-2.5 group cursor-default">
-                            <Box className="h-5 w-5 text-primary" />
-                            <span className="font-black text-sm tracking-[0.3em] text-white">ATLAS</span>
+                        <div className="flex flex-col group cursor-default">
+                            <div className="flex items-center gap-3">
+                                <div className="relative">
+                                    <Box className="h-6 w-6 text-primary transition-transform group-hover:scale-110" />
+                                    <div className="absolute inset-0 bg-primary/40 blur-xl rounded-full opacity-0 group-hover:opacity-100 transition-opacity" />
+                                </div>
+                                <span className="font-black text-sm tracking-[0.3em] text-white">ATLAS</span>
+                            </div>
+                            <span className="text-[8px] font-black tracking-[0.1em] text-zinc-600 uppercase mt-0.5">
+                                Advanced Trading Lifecycle & Audit System
+                            </span>
                         </div>
                         <div className="px-2 py-0.5 rounded bg-white/5 border border-white/10">
                             <span className="text-[10px] font-black text-zinc-500 uppercase">Beta_0.1</span>
@@ -136,8 +144,8 @@ export default function Footer() {
                     <button
                         onClick={() => setIsExpanded(!isExpanded)}
                         className={`flex items-center gap-2.5 px-5 py-2 rounded-full border transition-all duration-300 text-[11px] font-black uppercase tracking-widest group ${isExpanded
-                                ? 'bg-primary text-white border-primary shadow-[0_0_20px_rgba(59,130,246,0.3)]'
-                                : 'bg-white/5 text-zinc-300 border-white/10 hover:border-white/30 hover:bg-white/10'
+                            ? 'bg-primary text-white border-primary shadow-[0_0_20px_rgba(59,130,246,0.3)]'
+                            : 'bg-white/5 text-zinc-300 border-white/10 hover:border-white/30 hover:bg-white/10'
                             }`}
                     >
                         {isExpanded ? 'System Min' : 'System Details'}
