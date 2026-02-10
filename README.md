@@ -123,3 +123,104 @@ The UI automatically adapts:
 ├── scripts/
 │   └── aws_verify.sh        # Cloud verification helpers
 └── README.md
+
+
+flowchart LR
+    %% =====================
+    %% CLIENT / UI LAYER
+    %% =====================
+    subgraph CLIENT["Client Layer"]
+        UI["ATLAS Trading Console<br/>(Next.js / React)"]
+        WS["WebSocket Feed"]
+    end
+
+    %% =====================
+    %% EDGE / GATEWAY
+    %% =====================
+    subgraph EDGE["Edge & API Layer"]
+        GW["Order Gateway<br/>(Go)"]
+        IDEMP["Idempotency Guard<br/>(Request Ledger)"]
+    end
+
+    %% =====================
+    %% STREAMING BACKBONE
+    %% =====================
+    subgraph STREAM["Streaming Backbone (Kafka-Compatible)"]
+        CMD["orders.commands"]
+        EVT["orders.events"]
+        RPT["exec.reports"]
+    end
+
+    %% =====================
+    %% CORE TRADING LOGIC
+    %% =====================
+    subgraph CORE["Core Trading Services"]
+        OMS["OMS Core<br/>(Order Lifecycle Engine)"]
+        VENUE["Venue Simulator<br/>(Market / Exchange)"]
+    end
+
+    %% =====================
+    %% STATE PATH
+    %% =====================
+    subgraph STATE["Authoritative State Path"]
+        DDBO["DynamoDB<br/>atlas_orders"]
+        DDBB["DynamoDB<br/>atlas_balances"]
+    end
+
+    %% =====================
+    %% AUDIT PATH
+    %% =====================
+    subgraph AUDIT["Cold / Audit Path"]
+        AE["Audit Exporter"]
+        S3["S3 Audit Archive<br/>(Immutable JSONL)"]
+        DL["Data Lake / BI<br/>(Snowflake, Athena)"]
+    end
+
+    %% =====================
+    %% OBSERVABILITY
+    %% =====================
+    subgraph OBS["Observability"]
+        OTEL["OpenTelemetry"]
+        PROM["Prometheus"]
+        GRAF["Grafana"]
+    end
+
+    %% =====================
+    %% FLOWS
+    %% =====================
+
+    UI -->|REST /orders| GW
+    UI <-->|Live Updates| WS
+
+    GW --> IDEMP
+    IDEMP -->|Accept / Reject| GW
+
+    GW -->|Command| CMD
+    CMD --> OMS
+
+    OMS -->|Order Events| EVT
+    OMS -->|Execution Request| VENUE
+    VENUE -->|Execution Report| RPT
+
+    RPT --> OMS
+    EVT --> WS
+
+    %% State persistence
+    OMS -->|Conditional Writes| DDBO
+    OMS -->|Balance Settlements| DDBB
+    GW -->|Request Ledger| DDBB
+
+    %% Audit
+    CMD --> AE
+    EVT --> AE
+    RPT --> AE
+    AE -->|Partition+Offset Keyed| S3
+    S3 --> DL
+
+    %% Observability
+    GW --> OTEL
+    OMS --> OTEL
+    VENUE --> OTEL
+    AE --> OTEL
+    OTEL --> PROM
+    PROM --> GRAF
