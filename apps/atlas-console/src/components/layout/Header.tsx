@@ -15,7 +15,7 @@ export default function Header() {
                 <div className="flex items-center gap-3">
                     <div className="flex items-center gap-2 font-black text-xl text-primary">
                         <Activity className="h-6 w-6 text-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.3)]" />
-                        <span>ATLAS PRO</span>
+                        <span>ATLAS</span>
                     </div>
                     <div className="h-4 w-px bg-border/50 hidden lg:block" />
                     <span className="text-[10px] font-bold tracking-[0.1em] text-muted-foreground/60 uppercase hidden xl:block italic">
