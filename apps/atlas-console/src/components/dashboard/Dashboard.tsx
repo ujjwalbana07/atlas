@@ -1,7 +1,9 @@
 import { OrderBlotter } from "./OrderBlotter"
 import { OrderEntry } from "./OrderEntry"
 import { useMarketData } from "../../context/MarketDataContext"
-import { Activity, Settings, LayoutDashboard, ChevronDown, ChevronUp } from "lucide-react"
+import { useMode } from "../../context/ModeContext"
+import { DemoEngine } from "../../demo/engine"
+import { Activity, Settings, LayoutDashboard, ChevronDown, ChevronUp, Rocket, RefreshCcw } from "lucide-react"
 import { MarketDepth } from "./MarketDepth"
 import { RecentTrades } from "./RecentTrades"
 import { SettingsModal } from "./SettingsModal"
@@ -19,6 +21,7 @@ import { computeVolatility, computeSpread, computeLiquidity, computeTrendBias } 
 
 export default function Dashboard() {
     const { orders, isConnected, l2Data, trades } = useMarketData()
+    const { isDemoMode } = useMode()
     const [isSettingsOpen, setIsSettingsOpen] = useState(false)
     const [isTccOpen, setIsTccOpen] = useState(true) // For mobile accordion
 
@@ -32,6 +35,13 @@ export default function Dashboard() {
 
     const handlePriceSuggest = (suggestedPrice: number) => {
         setOrderForm(prev => ({ ...prev, price: suggestedPrice.toFixed(2) }))
+    }
+
+    const handleResetDemo = () => {
+        if (confirm("Reset Demo Account? All orders and balances will be cleared.")) {
+            DemoEngine.getInstance().reset()
+            window.location.reload() // Force reload to clear all local hook states
+        }
     }
 
     // Pick active symbol
@@ -64,6 +74,23 @@ export default function Dashboard() {
                 </div>
 
                 <div className="flex items-center gap-4">
+                    {isDemoMode && (
+                        <div className="flex items-center gap-2 text-[10px] font-bold border px-3 py-1 rounded-full bg-primary/10 text-primary border-primary/20 animate-pulse">
+                            <Rocket className="h-3 w-3" />
+                            DEMO ENGINE RUNNING
+                        </div>
+                    )}
+
+                    {isDemoMode && (
+                        <button
+                            onClick={handleResetDemo}
+                            className="flex items-center gap-1.5 px-3 py-1 rounded-full border text-[10px] font-bold hover:bg-muted transition-colors"
+                        >
+                            <RefreshCcw className="h-3 w-3" />
+                            RESET DEMO
+                        </button>
+                    )}
+
                     <button
                         className="p-2 hover:bg-secondary rounded-full transition-colors cursor-pointer"
                         title="Settings"
@@ -72,14 +99,16 @@ export default function Dashboard() {
                         <Settings className="h-5 w-5 text-muted-foreground" />
                     </button>
 
-                    <div className="flex items-center gap-2 text-xs border px-3 py-1 rounded-full bg-muted/50">
-                        <span className="flex h-2 w-2 rounded-full bg-green-500"></span>
-                        <span className="font-medium text-muted-foreground">API OK</span>
-                    </div>
+                    {!isDemoMode && (
+                        <div className="flex items-center gap-2 text-xs border px-3 py-1 rounded-full bg-muted/50">
+                            <span className="flex h-2 w-2 rounded-full bg-green-500"></span>
+                            <span className="font-medium text-muted-foreground">API OK</span>
+                        </div>
+                    )}
 
                     <div className="flex items-center gap-2 text-xs border px-3 py-1 rounded-full">
                         <span className={isConnected ? "text-green-500 animate-pulse" : "text-red-500"}>●</span>
-                        <span className="font-medium">{isConnected ? "Connected" : "Disconnected"}</span>
+                        <span className="font-medium">{isConnected ? (isDemoMode ? "Engine Active" : "Connected") : "Disconnected"}</span>
                     </div>
                 </div>
             </div>
@@ -98,7 +127,7 @@ export default function Dashboard() {
                         </div>
 
                         {/* Bottom Row: Blotter */}
-                        <div className="rounded-lg border bg-card text-card-foreground shadow-sm p-4 flex flex-col flex-1 min-h-[300px]">
+                        <div className="rounded-lg border bg-card text-card-foreground shadow-sm p-4 flex flex-col h-[250px]">
                             <div className="flex items-center justify-between mb-2">
                                 <h3 className="font-semibold text-lg flex items-center gap-2">
                                     <Activity className="h-4 w-4" />
@@ -106,7 +135,7 @@ export default function Dashboard() {
                                 </h3>
                                 <span className="text-muted-foreground text-xs">{orders.length} orders</span>
                             </div>
-                            <div className="flex-1 overflow-y-auto min-h-0">
+                            <div className="flex-1 overflow-y-auto min-h-0 custom-scrollbar">
                                 <OrderBlotter data={orders} />
                             </div>
                         </div>
@@ -151,21 +180,28 @@ export default function Dashboard() {
                             )}
                         </div>
 
-                        <div className="rounded-lg border bg-card text-card-foreground shadow-sm h-[200px] overflow-hidden">
-                            <RecentTrades trades={trades} />
+                        <div className="rounded-lg border bg-card text-card-foreground shadow-sm h-[250px] overflow-hidden flex flex-col">
+                            <div className="flex-1 overflow-y-auto custom-scrollbar">
+                                <RecentTrades trades={trades} />
+                            </div>
                         </div>
                     </div>
                 </div>
 
                 {/* Analytics / Insights Section */}
-                <div className="flex flex-col gap-4">
-                    <h3 className="text-lg font-semibold tracking-tight px-1 uppercase text-[10px] tracking-[0.2em] text-muted-foreground">Analytics & Insights</h3>
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pb-8">
-                        <div className="h-[250px]"><OrderFlowChart /></div>
-                        <div className="h-[250px]"><SpreadChart /></div>
-                        <div className="h-[250px]"><ExposureChart /></div>
-                        <div className="h-[250px]"><PaperPnLChart /></div>
-                        <div className="h-[250px]"><OrderDistributionChart /></div>
+                <div className="flex flex-col gap-4 mt-8 pb-32">
+                    <div className="flex items-center gap-4 px-1">
+                        <h3 className="text-lg font-bold tracking-tight uppercase text-[10px] tracking-[0.3em] text-primary">Intelligence Hub</h3>
+                        <div className="h-[1px] flex-1 bg-gradient-to-r from-primary/50 to-transparent"></div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-8">
+                        {/* Status is now prioritized */}
+                        <OrderDistributionChart />
+                        <OrderFlowChart />
+                        <PaperPnLChart />
+                        <SpreadChart />
+                        <ExposureChart />
                     </div>
                 </div>
             </div>

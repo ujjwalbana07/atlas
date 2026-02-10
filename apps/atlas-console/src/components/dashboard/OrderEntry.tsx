@@ -2,6 +2,8 @@ import { useState, useEffect, useMemo } from "react"
 import { api } from "../../lib/api"
 import type { OrderCommand } from "../../types"
 import { useUserContext } from "../../context/UserContext"
+import { useMode } from "../../context/ModeContext"
+import { DemoEngine } from "../../demo/engine"
 import { toast } from "sonner"
 
 import { useBalances } from "../../hooks/useBalances"
@@ -23,6 +25,7 @@ interface OrderEntryProps {
 
 export function OrderEntry({ initialForm, onFormChange }: OrderEntryProps) {
     const { clientId } = useUserContext()
+    const { isDemoMode } = useMode()
     const account = useBalances()
     const [loading, setLoading] = useState(false)
     const [localForm, setLocalForm] = useState(initialForm)
@@ -44,6 +47,15 @@ export function OrderEntry({ initialForm, onFormChange }: OrderEntryProps) {
 
     // Pre-Trade Risk
     const risk = useMemo(() => {
+        if (!account) return {
+            status: 'OK' as const,
+            message: '',
+            requiredAmount: 0,
+            amountAfter: 0,
+            assetAfter: 0,
+            exposureChange: 0,
+            warnings: []
+        }
         return calculatePreTradeRisk(
             localForm.side,
             qtyNum,
@@ -84,10 +96,18 @@ export function OrderEntry({ initialForm, onFormChange }: OrderEntryProps) {
                 quantity: qtyNum,
                 price: priceNum
             }
-            await api.submitOrder(order)
-            toast.success("Order Submitted", {
-                description: `${localForm.side} ${qtyNum} ${localForm.symbol} @ ${priceNum}`
-            })
+
+            if (isDemoMode) {
+                DemoEngine.getInstance().submitOrder(order)
+                toast.success("Demo Order Submitted", {
+                    description: `${localForm.side} ${qtyNum} ${localForm.symbol} @ ${priceNum}`
+                })
+            } else {
+                await api.submitOrder(order)
+                toast.success("Order Submitted", {
+                    description: `${localForm.side} ${qtyNum} ${localForm.symbol} @ ${priceNum}`
+                })
+            }
         } catch (error: any) {
             console.error("Failed to submit order", error)
             const errorMsg = error.response?.data?.message || error.message || "Unknown error"

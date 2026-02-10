@@ -1,11 +1,13 @@
-import { LayoutDashboard, Settings, Activity, User, Sun, Moon } from 'lucide-react'
+import { LayoutDashboard, Settings, Activity, User, Sun, Moon, Rocket, Radio } from 'lucide-react'
 import { NavLink } from 'react-router-dom'
 import { useUserContext } from '../../context/UserContext'
 import { useTheme } from '../../context/ThemeContext'
+import { useMode } from '../../context/ModeContext'
 
 export default function Header() {
     const { clientId, account, strategy, setContext } = useUserContext()
     const { theme, toggleTheme } = useTheme()
+    const { isDemoMode, setIsDemoMode } = useMode()
 
     return (
         <header className="border-b border-border bg-card px-6 py-3 flex items-center justify-between shrink-0 transition-colors duration-300">
@@ -47,6 +49,24 @@ export default function Header() {
             </div>
 
             <div className="flex items-center gap-4">
+                {/* Mode Toggle */}
+                <div className="flex items-center gap-1 bg-muted/30 p-1 rounded-lg border mr-2">
+                    <button
+                        onClick={() => setIsDemoMode(true)}
+                        className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider transition-all ${isDemoMode ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+                    >
+                        <Rocket className="h-3 w-3" />
+                        Demo
+                    </button>
+                    <button
+                        onClick={() => setIsDemoMode(false)}
+                        className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider transition-all ${!isDemoMode ? 'bg-green-600 text-white shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+                    >
+                        <Radio className="h-3 w-3" />
+                        Live
+                    </button>
+                </div>
+
                 {/* Theme Toggle */}
                 <button
                     onClick={toggleTheme}

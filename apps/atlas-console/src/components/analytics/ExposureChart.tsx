@@ -44,9 +44,9 @@ export function ExposureChart() {
     const latest = data[data.length - 1]
 
     return (
-        <Card className="col-span-1">
-            <CardHeader>
-                <CardTitle className="flex justify-between items-center bg-muted/20 p-2 rounded">
+        <Card className="col-span-1 h-[400px] flex flex-col">
+            <CardHeader className="shrink-0 pb-2">
+                <CardTitle className="flex justify-between items-center bg-muted/20 p-2 rounded text-sm font-medium">
                     <span>Account Exposure</span>
                     <div className="flex gap-2 text-sm">
                         <span className="text-orange-400">BTC: {latest.btc.toFixed(4)}</span>
@@ -54,7 +54,7 @@ export function ExposureChart() {
                     </div>
                 </CardTitle>
             </CardHeader>
-            <CardContent className="h-[250px]">
+            <CardContent className="flex-1 p-4 min-h-0">
                 <ResponsiveContainer width="100%" height="100%">
                     <AreaChart data={data}>
                         <defs>

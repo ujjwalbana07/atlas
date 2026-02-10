@@ -32,11 +32,11 @@ export function OrderFlowChart() {
     }, [trades])
 
     return (
-        <Card className="col-span-1">
-            <CardHeader>
-                <CardTitle>Order Flow (Volume)</CardTitle>
+        <Card className="col-span-1 h-[400px] flex flex-col">
+            <CardHeader className="shrink-0 pb-0">
+                <CardTitle className="text-sm font-medium">Order Flow (Volume)</CardTitle>
             </CardHeader>
-            <CardContent className="h-[300px]">
+            <CardContent className="flex-1 p-4 min-h-0">
                 <ResponsiveContainer width="100%" height="100%">
                     <BarChart data={data}>
                         <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#333" />

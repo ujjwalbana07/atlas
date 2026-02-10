@@ -10,20 +10,23 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/atlas/services/common/config"
 	"github.com/atlas/services/common/kafka"
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/config"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
 var (
 	kafkaBrokers = []string{"localhost:19092"}
 	topics       = []string{"orders.events", "exec.reports"}
-	bucketName   = "atlas-audit-demo"
-	region       = "us-east-1"
+	awsCfg       *config.AWSConfig
 )
 
 func main() {
+	// Load AWS Config
+	awsCfg = config.LoadAWSConfig("audit-exporter")
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -37,7 +40,7 @@ func main() {
 	}()
 
 	// Initialize S3 Client
-	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
+	cfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(awsCfg.Region))
 	if err != nil {
 		log.Fatalf("unable to load SDK config, %v", err)
 	}
@@ -54,7 +57,7 @@ func main() {
 }
 
 func consumeAndArchive(ctx context.Context, topic string, s3Client *s3.Client) {
-	consumer := kafka.NewConsumer(kafkaBrokers, topic, "audit-exporter-group")
+	consumer := kafka.NewConsumer(kafkaBrokers, topic, "audit-exporter-group-v2")
 	defer consumer.Close()
 
 	log.Printf("Consumer started for topic: %s", topic)
@@ -63,12 +66,14 @@ func consumeAndArchive(ctx context.Context, topic string, s3Client *s3.Client) {
 		// Partitioning logic: dt=YYYY-MM-DD/topic=<topic_name>/part-timestamp.jsonl
 		now := time.Now().UTC()
 		dt := now.Format("2006-01-02")
-		filename := fmt.Sprintf("events/dt=%s/topic=%s/part-%d.jsonl", dt, topic, now.UnixNano())
+		// Use partition and offset for idempotency (same message = same filename)
+		filename := fmt.Sprintf("events/dt=%s/topic=%s/p=%d/offset=%d.jsonl",
+			dt, topic, msg.Partition, msg.Offset)
 
-		log.Printf("[AUDIT] Archiving event to S3: %s", filename)
+		log.Printf("[AUDIT] Archiving event to S3 bucket: %s, key: %s", awsCfg.AuditS3Bucket, filename)
 
 		_, err := s3Client.PutObject(ctx, &s3.PutObjectInput{
-			Bucket: aws.String(bucketName),
+			Bucket: aws.String(awsCfg.AuditS3Bucket),
 			Key:    aws.String(filename),
 			Body:   strings.NewReader(string(msg.Value) + "\n"),
 		})

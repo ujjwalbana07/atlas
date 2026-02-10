@@ -68,3 +68,12 @@ export interface OrderRow {
     avg_price: number
     updated_at: string
 }
+export interface Balance {
+    available: number
+    reserved: number
+}
+
+export interface Account {
+    usd: Balance
+    btc: Balance
+}

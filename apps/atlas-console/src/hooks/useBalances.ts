@@ -1,4 +1,6 @@
 import { useState, useEffect } from 'react'
+import { useMode } from '../context/ModeContext'
+import { DemoEngine } from '../demo/engine'
 
 export interface Balance {
     available: number
@@ -11,10 +13,15 @@ export interface Account {
 }
 
 export function useBalances(accountId: string = "ACC_CHILD_1") {
+    const { isDemoMode } = useMode()
     const [account, setAccount] = useState<Account | null>(null)
 
     useEffect(() => {
         const fetchBalances = async () => {
+            if (isDemoMode) {
+                setAccount(DemoEngine.getInstance().getBalances())
+                return
+            }
             try {
                 const res = await fetch(`http://localhost:8001/balances?account_id=${accountId}`)
                 if (res.ok) {
@@ -29,7 +36,7 @@ export function useBalances(accountId: string = "ACC_CHILD_1") {
         fetchBalances()
         const interval = setInterval(fetchBalances, 2000)
         return () => clearInterval(interval)
-    }, [accountId])
+    }, [accountId, isDemoMode])
 
     return account
 }

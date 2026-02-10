@@ -32,14 +32,14 @@ export function SpreadChart() {
     const currentSpread = history.length > 0 ? history[history.length - 1].spread : 0
 
     return (
-        <Card className="col-span-1">
-            <CardHeader className="pb-2">
+        <Card className="col-span-1 h-[400px] flex flex-col">
+            <CardHeader className="shrink-0 pb-2">
                 <CardTitle className="text-sm font-medium flex justify-between">
                     <span>Spread & Mid</span>
                     <span className="font-mono text-xs text-muted-foreground">Spread: {currentSpread.toFixed(2)}</span>
                 </CardTitle>
             </CardHeader>
-            <CardContent className="h-[200px]">
+            <CardContent className="flex-1 p-4 min-h-0">
                 <ResponsiveContainer width="100%" height="100%">
                     <LineChart data={history}>
                         <XAxis dataKey="time" stroke="#666" fontSize={10} tick={false} />

@@ -45,16 +45,16 @@ export function PaperPnLChart() {
     const currentPnL = history.length > 0 ? history[history.length - 1].pnl : 0
 
     return (
-        <Card className="col-span-1">
-            <CardHeader>
-                <CardTitle className="flex justify-between">
+        <Card className="col-span-1 h-[400px] flex flex-col">
+            <CardHeader className="shrink-0 pb-0">
+                <CardTitle className="flex justify-between text-sm font-medium">
                     <span>Paper PnL (Demo)</span>
                     <span className={currentPnL >= 0 ? "text-green-500" : "text-red-500"}>
                         ${currentPnL.toFixed(2)}
                     </span>
                 </CardTitle>
             </CardHeader>
-            <CardContent className="h-[250px]">
+            <CardContent className="flex-1 p-4 min-h-0">
                 <ResponsiveContainer width="100%" height="100%">
                     <LineChart data={history}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#333" />

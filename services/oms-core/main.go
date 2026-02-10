@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/atlas/services/common/config"
 	"github.com/atlas/services/common/db"
 	"github.com/atlas/services/common/kafka"
 	"github.com/atlas/services/common/model"
@@ -32,10 +34,13 @@ var (
 
 	// Persistence
 	dynamoClient *db.DynamoClient
-	tableOrders  = "atlas_orders"
+	awsCfg       *config.AWSConfig
 )
 
 func main() {
+	// Load AWS Config
+	awsCfg = config.LoadAWSConfig("oms-core")
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -43,7 +48,7 @@ func main() {
 	defer producer.Close()
 
 	// Initialize DynamoDB Client
-	dynamo, err := db.NewDynamoClient(ctx, "http://localhost:8000")
+	dynamo, err := db.NewDynamoClient(ctx, awsCfg.Region, awsCfg.DynamoDBEndpoint)
 	if err != nil {
 		log.Fatalf("Failed to connect to DynamoDB: %v", err)
 	}
@@ -60,6 +65,20 @@ func main() {
 	defer execConsumer.Close()
 
 	log.Println("OMS Core started...")
+
+	// Start Debug HTTP Server
+	go func() {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/debug/ddb", handleDebugDDB)
+		mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprintln(w, "OK")
+		})
+		log.Println("[OMS] Debug server listening on :8002")
+		if err := http.ListenAndServe(":8002", mux); err != nil {
+			log.Printf("[OMS] Debug server failed: %v", err)
+		}
+	}()
 
 	// Handle graceful shutdown
 	go func() {
@@ -153,7 +172,7 @@ func main() {
 
 	// Command consumer - this BLOCKS, so exec consumer must be started before this
 	log.Println("[OMS] Starting Orders Commands consumer...")
-	err := consumer.Consume(ctx, func(ctx context.Context, msg kafka.Message) error {
+	err = consumer.Consume(ctx, func(ctx context.Context, msg kafka.Message) error {
 		var cmd model.OrderCommand
 		if err := json.Unmarshal(msg.Value, &cmd); err != nil {
 			log.Printf("[OMS] Error unmarshalling command: %v", err)
@@ -236,52 +255,99 @@ func main() {
 
 func getOrderStatus(ctx context.Context, orderID string) (model.OrderStatus, error) {
 	result, err := dynamoClient.GetItem(ctx, &dynamodb.GetItemInput{
-		TableName: aws.String(tableOrders),
+		TableName: aws.String(awsCfg.OrdersTable),
 		Key:       map[string]types.AttributeValue{"order_id": &types.AttributeValueMemberS{Value: orderID}},
 	})
-	if err != nil || result.Item == nil {
+	if err != nil {
+		log.Printf("[DDB-ERROR] GetItem Table=%s Key=%s Error=%v", awsCfg.OrdersTable, orderID, err)
+		return "", err
+	}
+	if result.Item == nil {
 		return "", errors.New("not found")
 	}
 	var order struct {
 		Status string `dynamodbav:"status"`
 	}
-	attributevalue.UnmarshalMap(result.Item, &order)
+	if err := attributevalue.UnmarshalMap(result.Item, &order); err != nil {
+		return "", err
+	}
 	return model.OrderStatus(order.Status), nil
 }
 
-func createOrder(ctx context.Context, cmd model.OrderCommand) {
-	item, _ := attributevalue.MarshalMap(map[string]interface{}{
-		"order_id":       cmd.OrderID,
-		"account_id":     "ACC_CHILD_1",
-		"symbol":         cmd.Symbol,
-		"side":           string(cmd.Side),
-		"price":          cmd.Price,
-		"qty":            cmd.QuantityVal,
-		"filled_qty":     0.0,
-		"avg_fill_price": 0.0,
-		"status":         string(model.OrderStatusPendingSubmit),
-		"created_at":     time.Now().Unix(),
-		"updated_at":     time.Now().Unix(),
+func handleDebugDDB(w http.ResponseWriter, r *http.Request) {
+	status := "OK"
+	_, err := dynamoClient.DescribeTable(context.Background(), &dynamodb.DescribeTableInput{
+		TableName: aws.String(awsCfg.OrdersTable),
 	})
-	dynamoClient.PutItem(ctx, &dynamodb.PutItemInput{
-		TableName: aws.String(tableOrders),
-		Item:      item,
+	if err != nil {
+		status = fmt.Sprintf("FAIL: %v", err)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"service":           "oms-core",
+		"region":            awsCfg.Region,
+		"orders_table":      awsCfg.OrdersTable,
+		"endpoint_override": awsCfg.DynamoDBEndpoint,
+		"use_ddb_local":     awsCfg.UseLocalDDB,
+		"ddb_status":        status,
 	})
 }
 
-func updateOrderStatus(ctx context.Context, orderID string, status model.OrderStatus, filledQty float64, avgPrice float64) {
-	dynamoClient.UpdateItem(ctx, &dynamodb.UpdateItemInput{
-		TableName:                aws.String(tableOrders),
+func createOrder(ctx context.Context, cmd model.OrderCommand) {
+	log.Printf("[OMS] Persisting new order %s to DynamoDB for account %s", cmd.OrderID, cmd.ClientID)
+
+	item, err := attributevalue.MarshalMap(map[string]interface{}{
+		"order_id":   cmd.OrderID,
+		"account_id": cmd.ClientID, // Use ClientID as authoritative account identifier
+		"symbol":     cmd.Symbol,
+		"side":       string(cmd.Side),
+		"price":      cmd.Price,
+		"order_qty":  cmd.QuantityVal,
+		"cum_qty":    0.0,
+		"leaves_qty": cmd.QuantityVal,
+		"avg_px":     0.0,
+		"last_px":    0.0,
+		"status":     string(model.OrderStatusPendingSubmit),
+		"created_at": time.Now().Unix(),
+		"updated_at": time.Now().Unix(),
+	})
+	if err != nil {
+		log.Printf("[OMS-ERROR] Failed to marshal order %s: %v", cmd.OrderID, err)
+		return
+	}
+
+	_, err = dynamoClient.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: aws.String(awsCfg.OrdersTable),
+		Item:      item,
+	})
+	if err != nil {
+		log.Printf("[DDB-WRITE-ERROR] Table=%s Key=%s Error=%v", awsCfg.OrdersTable, cmd.OrderID, err)
+	} else {
+		log.Printf("[DDB-WRITE-SUCCESS] Table=%s Key=%s (New Order created)", awsCfg.OrdersTable, cmd.OrderID)
+	}
+}
+
+func updateOrderStatus(ctx context.Context, orderID string, status model.OrderStatus, cumQty float64, avgPrice float64) {
+	log.Printf("[OMS] Updating order %s status to %s (cum_qty=%f, avg_px=%f) in DynamoDB", orderID, status, cumQty, avgPrice)
+
+	_, err := dynamoClient.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName:                aws.String(awsCfg.OrdersTable),
 		Key:                      map[string]types.AttributeValue{"order_id": &types.AttributeValueMemberS{Value: orderID}},
-		UpdateExpression:         aws.String("SET #s = :s, filled_qty = :fq, avg_fill_price = :ap, updated_at = :u"),
+		UpdateExpression:         aws.String("SET #s = :s, cum_qty = :cq, avg_px = :ap, updated_at = :u"),
 		ExpressionAttributeNames: map[string]string{"#s": "status"},
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":s":  &types.AttributeValueMemberS{Value: string(status)},
-			":fq": &types.AttributeValueMemberN{Value: fmt.Sprintf("%f", filledQty)},
+			":cq": &types.AttributeValueMemberN{Value: fmt.Sprintf("%f", cumQty)},
 			":ap": &types.AttributeValueMemberN{Value: fmt.Sprintf("%f", avgPrice)},
 			":u":  &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", time.Now().Unix())},
 		},
 	})
+	if err != nil {
+		log.Printf("[DDB-WRITE-ERROR] Table=%s Key=%s Error=%v", awsCfg.OrdersTable, orderID, err)
+	} else {
+		log.Printf("[DDB-WRITE-SUCCESS] Table=%s Key=%s (Status updated to %s)", awsCfg.OrdersTable, orderID, status)
+	}
 }
 
 func sendExecReport(p *kafka.Producer, cmd model.OrderCommand, execType string, status model.OrderStatus, reason string) {
@@ -298,7 +364,6 @@ func sendExecReport(p *kafka.Producer, cmd model.OrderCommand, execType string, 
 		Timestamp: time.Now().UTC(),
 		Reason:    reason,
 	}
-	// Calculate leaves/cum for simple cases (NEW/REJECTED)
 	if status == model.OrderStatusNew || status == model.OrderStatusPendingSubmit {
 		report.LeavesQty = cmd.QuantityVal
 	}

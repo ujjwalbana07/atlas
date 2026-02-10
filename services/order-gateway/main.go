@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/atlas/services/common/config"
 	"github.com/atlas/services/common/db"
 	"github.com/atlas/services/common/kafka"
 	"github.com/atlas/services/common/model"
@@ -44,9 +45,8 @@ var (
 	mu sync.Mutex
 
 	// Persistence
-	dynamoClient     *db.DynamoClient
-	tableBalances    = "atlas_balances"
-	tableIdempotency = "atlas_idempotency"
+	dynamoClient *db.DynamoClient
+	awsCfg       *config.AWSConfig
 
 	// Balance Manager State (Default demo values)
 	initialUSD = 1000000.0
@@ -56,12 +56,15 @@ var (
 func main() {
 	ctx := context.Background()
 
+	// Load AWS Config
+	awsCfg = config.LoadAWSConfig("order-gateway")
+
 	// Initialize Kafka Producer
 	producer = kafka.NewProducer(kafkaBrokers, topicCommands)
 	defer producer.Close()
 
-	// Initialize DynamoDB Client (connecting to local DynamoDB for demo)
-	dynamo, err := db.NewDynamoClient(ctx, "http://localhost:8000")
+	// Initialize DynamoDB Client
+	dynamo, err := db.NewDynamoClient(ctx, awsCfg.Region, awsCfg.DynamoDBEndpoint)
 	if err != nil {
 		log.Fatalf("Failed to connect to DynamoDB: %v", err)
 	}
@@ -80,6 +83,7 @@ func main() {
 	mux.HandleFunc("/balances", enableCors(handleBalances))
 	mux.HandleFunc("/ws", handleWebSocket)
 	mux.HandleFunc("/health", enableCors(handleHealth))
+	mux.HandleFunc("/debug/ddb", enableCors(handleDebugDDB))
 
 	server := &http.Server{
 		Addr:    ":8001",
@@ -126,7 +130,7 @@ func handleBalances(w http.ResponseWriter, r *http.Request) {
 
 func getAccount(ctx context.Context, accountID string) (*model.Account, error) {
 	result, err := dynamoClient.GetItem(ctx, &dynamodb.GetItemInput{
-		TableName: aws.String(tableBalances),
+		TableName: aws.String(awsCfg.BalancesTable),
 		Key: map[string]types.AttributeValue{
 			"account_id": &types.AttributeValueMemberS{Value: accountID},
 		},
@@ -151,9 +155,14 @@ func getAccount(ctx context.Context, accountID string) (*model.Account, error) {
 			"updated_at":    time.Now().Unix(),
 		})
 		_, err = dynamoClient.PutItem(ctx, &dynamodb.PutItemInput{
-			TableName: aws.String(tableBalances),
+			TableName: aws.String(awsCfg.BalancesTable),
 			Item:      item,
 		})
+		if err != nil {
+			log.Printf("[DDB-WRITE-ERROR] Table=%s Key=%s Error=%v", awsCfg.BalancesTable, accountID, err)
+		} else {
+			log.Printf("[DDB-WRITE-SUCCESS] Table=%s Key=%s (Initial balances created)", awsCfg.BalancesTable, accountID)
+		}
 		return acc, err
 	}
 
@@ -214,7 +223,10 @@ func handleOrderEntry(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// PRE-TRADE CHECK & PERSISTENT RESERVATION (DynamoDB)
-	accountID := "ACC_CHILD_1"
+	accountID := cmd.ClientID
+	if accountID == "" {
+		accountID = "ACC_CHILD_1" // Fallback for very old commands
+	}
 	if err := reserveBalances(ctx, accountID, cmd); err != nil {
 		log.Printf("[GATEWAY] Reservation failed for %s: %v", accountID, err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -237,7 +249,7 @@ func handleOrderEntry(w http.ResponseWriter, r *http.Request) {
 
 func checkIdempotency(ctx context.Context, commandID string) (bool, error) {
 	_, err := dynamoClient.PutItem(ctx, &dynamodb.PutItemInput{
-		TableName:           aws.String(tableIdempotency),
+		TableName:           aws.String(awsCfg.IdempotencyTable),
 		Item:                map[string]types.AttributeValue{"request_id": &types.AttributeValueMemberS{Value: commandID}},
 		ConditionExpression: aws.String("attribute_not_exists(request_id)"),
 	})
@@ -246,16 +258,24 @@ func checkIdempotency(ctx context.Context, commandID string) (bool, error) {
 		if errors.As(err, &condErr) {
 			return false, nil
 		}
+		log.Printf("[DDB-WRITE-ERROR] Table=%s Key=%s Error=%v", awsCfg.IdempotencyTable, commandID, err)
 		return false, err
 	}
+	log.Printf("[DDB-WRITE-SUCCESS] Table=%s Key=%s (Idempotency stored)", awsCfg.IdempotencyTable, commandID)
 	return true, nil
 }
 
 func reserveBalances(ctx context.Context, accountID string, cmd model.OrderCommand) error {
+	// Ensure account exists first
+	_, err := getAccount(ctx, accountID)
+	if err != nil {
+		return fmt.Errorf("failed to prepare account: %w", err)
+	}
+
 	cost := cmd.QuantityVal * cmd.Price
 
 	update := &dynamodb.UpdateItemInput{
-		TableName: aws.String(tableBalances),
+		TableName: aws.String(awsCfg.BalancesTable),
 		Key: map[string]types.AttributeValue{
 			"account_id": &types.AttributeValueMemberS{Value: accountID},
 		},
@@ -275,21 +295,23 @@ func reserveBalances(ctx context.Context, accountID string, cmd model.OrderComma
 		}
 	}
 
-	_, err := dynamoClient.UpdateItem(ctx, update)
+	_, err = dynamoClient.UpdateItem(ctx, update)
 	if err != nil {
 		var condErr *types.ConditionalCheckFailedException
 		if errors.As(err, &condErr) {
 			return fmt.Errorf("insufficient funds/inventory")
 		}
+		log.Printf("[DDB-WRITE-ERROR] Table=%s Key=%s Error=%v", awsCfg.BalancesTable, accountID, err)
 		return err
 	}
+	log.Printf("[DDB-WRITE-SUCCESS] Table=%s Key=%s (Balances reserved for order %s)", awsCfg.BalancesTable, accountID, cmd.OrderID)
 	return nil
 }
 
 func undoReservation(ctx context.Context, accountID string, cmd model.OrderCommand) {
 	cost := cmd.QuantityVal * cmd.Price
 	update := &dynamodb.UpdateItemInput{
-		TableName: aws.String(tableBalances),
+		TableName: aws.String(awsCfg.BalancesTable),
 		Key: map[string]types.AttributeValue{
 			"account_id": &types.AttributeValueMemberS{Value: accountID},
 		},
@@ -305,7 +327,12 @@ func undoReservation(ctx context.Context, accountID string, cmd model.OrderComma
 			":qty": &types.AttributeValueMemberN{Value: fmt.Sprintf("%f", cmd.QuantityVal)},
 		}
 	}
-	dynamoClient.UpdateItem(ctx, update)
+	_, err := dynamoClient.UpdateItem(ctx, update)
+	if err != nil {
+		log.Printf("[DDB-WRITE-ERROR] Table=%s Key=%s Error=%v", awsCfg.BalancesTable, accountID, err)
+	} else {
+		log.Printf("[DDB-WRITE-SUCCESS] Table=%s Key=%s (Reservation undone for order %s)", awsCfg.BalancesTable, accountID, cmd.OrderID)
+	}
 }
 
 func handleWebSocket(w http.ResponseWriter, r *http.Request) {
@@ -335,6 +362,26 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 func handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func handleDebugDDB(w http.ResponseWriter, r *http.Request) {
+	status := "OK"
+	_, err := dynamoClient.DescribeTable(context.Background(), &dynamodb.DescribeTableInput{
+		TableName: aws.String(awsCfg.BalancesTable),
+	})
+	if err != nil {
+		status = fmt.Sprintf("FAIL: %v", err)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"service":           "order-gateway",
+		"region":            awsCfg.Region,
+		"balances_table":    awsCfg.BalancesTable,
+		"endpoint_override": awsCfg.DynamoDBEndpoint,
+		"use_ddb_local":     awsCfg.UseLocalDDB,
+		"ddb_status":        status,
+	})
 }
 
 func handleMessages() {
@@ -375,7 +422,10 @@ func startConsumer() {
 }
 
 func updateBalances(report model.ExecutionReport) {
-	accountID := "ACC_CHILD_1"
+	accountID := report.ClientID
+	if accountID == "" {
+		accountID = "ACC_CHILD_1"
+	}
 	ctx := context.Background()
 
 	if report.Status == model.OrderStatusFilled || report.Status == model.OrderStatusPartiallyFilled {
@@ -387,7 +437,7 @@ func updateBalances(report model.ExecutionReport) {
 		}
 
 		update := &dynamodb.UpdateItemInput{
-			TableName: aws.String(tableBalances),
+			TableName: aws.String(awsCfg.BalancesTable),
 			Key: map[string]types.AttributeValue{
 				"account_id": &types.AttributeValueMemberS{Value: accountID},
 			},
@@ -412,7 +462,12 @@ func updateBalances(report model.ExecutionReport) {
 				":proc": &types.AttributeValueMemberN{Value: fmt.Sprintf("%f", proceeds)},
 			}
 		}
-		dynamoClient.UpdateItem(ctx, update)
+		_, err := dynamoClient.UpdateItem(ctx, update)
+		if err != nil {
+			log.Printf("[DDB-WRITE-ERROR] Table=%s Key=%s Error=%v", awsCfg.BalancesTable, accountID, err)
+		} else {
+			log.Printf("[DDB-WRITE-SUCCESS] Table=%s Key=%s (Balances settled for order %s)", awsCfg.BalancesTable, accountID, report.OrderID)
+		}
 
 	} else if report.Status == model.OrderStatusCanceled || report.Status == model.OrderStatusRejected {
 		leaves := report.LeavesQty
@@ -422,7 +477,7 @@ func updateBalances(report model.ExecutionReport) {
 
 		if leaves > 0 {
 			update := &dynamodb.UpdateItemInput{
-				TableName: aws.String(tableBalances),
+				TableName: aws.String(awsCfg.BalancesTable),
 				Key: map[string]types.AttributeValue{
 					"account_id": &types.AttributeValueMemberS{Value: accountID},
 				},
@@ -440,7 +495,13 @@ func updateBalances(report model.ExecutionReport) {
 					":qty": &types.AttributeValueMemberN{Value: fmt.Sprintf("%f", leaves)},
 				}
 			}
-			dynamoClient.UpdateItem(ctx, update)
+			update.ConditionExpression = aws.String("usd_reserved >= :amt OR btc_reserved >= :qty") // Safety guard
+			_, err := dynamoClient.UpdateItem(ctx, update)
+			if err != nil {
+				log.Printf("[DDB-WRITE-ERROR] Table=%s Key=%s Error=%v", awsCfg.BalancesTable, accountID, err)
+			} else {
+				log.Printf("[DDB-WRITE-SUCCESS] Table=%s Key=%s (Balances released for order %s, status=%s)", awsCfg.BalancesTable, accountID, report.OrderID, report.Status)
+			}
 		}
 	}
 }

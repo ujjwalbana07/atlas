@@ -1,5 +1,7 @@
 import { createContext, useContext, useEffect, useState, useRef, type ReactNode } from 'react'
 import type { ExecutionReport, OrderRow, MarketDataUpdate } from '../types'
+import { useMode } from './ModeContext'
+import { DemoEngine } from '../demo/engine'
 
 interface MarketDataContextType {
     orders: OrderRow[]
@@ -11,53 +13,72 @@ interface MarketDataContextType {
 const MarketDataContext = createContext<MarketDataContextType | undefined>(undefined)
 
 export function MarketDataProvider({ children }: { children: ReactNode }) {
+    const { isDemoMode } = useMode()
     const [orders, setOrders] = useState<Record<string, OrderRow>>({})
     const [l2Data, setL2Data] = useState<Record<string, MarketDataUpdate>>({})
     const [trades, setTrades] = useState<MarketDataUpdate[]>([])
     const [isConnected, setIsConnected] = useState(false)
     const ws = useRef<WebSocket | null>(null)
 
+    // Clear state when switching modes
     useEffect(() => {
-        // Prevent multiple connections
-        if (ws.current?.readyState === WebSocket.OPEN) return
+        setOrders({})
+        setL2Data({})
+        setTrades([])
+    }, [isDemoMode])
 
-        ws.current = new WebSocket('ws://localhost:8001/ws')
-
-        ws.current.onopen = () => {
-            console.log('Connected to Order Gateway WS (Context)')
+    useEffect(() => {
+        if (isDemoMode) {
+            console.log('🚀 Demo Mode active (Context)')
             setIsConnected(true)
-        }
-
-        ws.current.onclose = () => {
-            setIsConnected(false)
-            // Retry connection after 5s? For now just simple close.
-        }
-
-        ws.current.onerror = (err) => {
-            console.error('WS Error', err)
-            setIsConnected(false)
-        }
-
-        ws.current.onmessage = (event) => {
-            try {
-                const data = JSON.parse(event.data)
-                // Execution reports have an order_id, Market Data doesn't
+            const unsubscribe = DemoEngine.getInstance().subscribe((data) => {
                 if ('order_id' in data) {
                     handleExecutionReport(data as ExecutionReport)
                 } else if ('type' in data && (data.type === 'L2' || data.type === 'TRADE')) {
                     handleMarketData(data as MarketDataUpdate)
-                } else {
-                    console.warn("Unknown message type received via WS:", data)
                 }
-            } catch (e) {
-                console.error("Failed to parse WS message", e)
+            })
+            return () => unsubscribe()
+        } else {
+            // Prevent multiple connections
+            if (ws.current?.readyState === WebSocket.OPEN) return
+
+            ws.current = new WebSocket('ws://localhost:8001/ws')
+
+            ws.current.onopen = () => {
+                console.log('Connected to Order Gateway WS (Context)')
+                setIsConnected(true)
+            }
+
+            ws.current.onclose = () => {
+                setIsConnected(false)
+            }
+
+            ws.current.onerror = (err) => {
+                console.error('WS Error', err)
+                setIsConnected(false)
+            }
+
+            ws.current.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data)
+                    if ('order_id' in data) {
+                        handleExecutionReport(data as ExecutionReport)
+                    } else if ('type' in data && (data.type === 'L2' || data.type === 'TRADE')) {
+                        handleMarketData(data as MarketDataUpdate)
+                    }
+                } catch (e) {
+                    console.error("Failed to parse WS message", e)
+                }
+            }
+
+            return () => {
+                ws.current?.close()
+                ws.current = null
+                setIsConnected(false)
             }
         }
-
-        return () => {
-            ws.current?.close()
-        }
-    }, [])
+    }, [isDemoMode])
 
     const handleMarketData = (update: MarketDataUpdate) => {
         if (update.type === 'L2') {
@@ -74,13 +95,6 @@ export function MarketDataProvider({ children }: { children: ReactNode }) {
     }
 
     const handleExecutionReport = (report: ExecutionReport) => {
-        console.log('📨 Exec Report Received:', {
-            order_id: report.order_id,
-            status: report.status,
-            cum_qty: report.cum_qty,
-            avg_px: report.avg_px
-        })
-
         setOrders(prev => {
             const current = prev[report.order_id] || {
                 order_id: report.order_id,
@@ -96,7 +110,6 @@ export function MarketDataProvider({ children }: { children: ReactNode }) {
             }
 
             if (current.updated_at && new Date(report.timestamp) < new Date(current.updated_at)) {
-                console.log('⏭️  Skipping old exec report for', report.order_id)
                 return prev
             }
 
@@ -112,14 +125,6 @@ export function MarketDataProvider({ children }: { children: ReactNode }) {
                     updated_at: report.timestamp
                 }
             }
-
-            console.log('✅ Order Updated:', {
-                order_id: report.order_id,
-                old_status: current.status,
-                new_status: report.status,
-                old_filled: current.filled_qty,
-                new_filled: report.cum_qty
-            })
 
             return updated
         })

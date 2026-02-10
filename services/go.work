@@ -2,7 +2,7 @@ go 1.25.7
 
 use (
 	./ai-explain
-	./audit-sink
+	./audit-exporter
 	./common
 	./oms-core
 	./order-gateway

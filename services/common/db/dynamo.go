@@ -14,22 +14,25 @@ type DynamoClient struct {
 	Client *dynamodb.Client
 }
 
-func NewDynamoClient(ctx context.Context, endpoint string) (*DynamoClient, error) {
-	// Load the SDK configuration
-	cfg, err := config.LoadDefaultConfig(ctx,
-		config.WithRegion("us-east-1"),
-		config.WithEndpointResolverWithOptions(aws.EndpointResolverWithOptionsFunc(
-			func(service, region string, options ...interface{}) (aws.Endpoint, error) {
-				return aws.Endpoint{URL: endpoint}, nil
-			},
-		)),
-		config.WithCredentialsProvider(aws.CredentialsProviderFunc(func(ctx context.Context) (aws.Credentials, error) {
-			return aws.Credentials{
-				AccessKeyID:     "dummy",
-				SecretAccessKey: "dummy",
+func NewDynamoClient(ctx context.Context, region string, endpoint string) (*DynamoClient, error) {
+	var optFns []func(*config.LoadOptions) error
+
+	if region != "" {
+		optFns = append(optFns, config.WithRegion(region))
+	}
+
+	// Only apply endpoint resolver if an endpoint is provided
+	if endpoint != "" {
+		resolver := aws.EndpointResolverWithOptionsFunc(func(service, region string, options ...interface{}) (aws.Endpoint, error) {
+			return aws.Endpoint{
+				URL:           endpoint,
+				SigningRegion: region,
 			}, nil
-		})),
-	)
+		})
+		optFns = append(optFns, config.WithEndpointResolverWithOptions(resolver))
+	}
+
+	cfg, err := config.LoadDefaultConfig(ctx, optFns...)
 	if err != nil {
 		return nil, fmt.Errorf("unable to load SDK config: %w", err)
 	}
@@ -60,4 +63,8 @@ func (d *DynamoClient) UpdateItem(ctx context.Context, input *dynamodb.UpdateIte
 
 func (d *DynamoClient) PutItemConditional(ctx context.Context, input *dynamodb.PutItemInput) (*dynamodb.PutItemOutput, error) {
 	return d.Client.PutItem(ctx, input)
+}
+
+func (d *DynamoClient) DescribeTable(ctx context.Context, input *dynamodb.DescribeTableInput) (*dynamodb.DescribeTableOutput, error) {
+	return d.Client.DescribeTable(ctx, input)
 }

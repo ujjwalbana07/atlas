@@ -8,6 +8,7 @@ import SettingsPage from './pages/SettingsPage'
 import { UserProvider } from './context/UserContext'
 import { MarketDataProvider } from './context/MarketDataContext'
 import { ThemeProvider, useTheme } from './context/ThemeContext'
+import { ModeProvider } from './context/ModeContext'
 
 function AppContent() {
   const { theme } = useTheme()
@@ -32,13 +33,15 @@ function AppContent() {
 function App() {
   return (
     <ThemeProvider>
-      <UserProvider>
-        <MarketDataProvider>
-          <BrowserRouter>
-            <AppContent />
-          </BrowserRouter>
-        </MarketDataProvider>
-      </UserProvider>
+      <ModeProvider>
+        <UserProvider>
+          <MarketDataProvider>
+            <BrowserRouter>
+              <AppContent />
+            </BrowserRouter>
+          </MarketDataProvider>
+        </UserProvider>
+      </ModeProvider>
     </ThemeProvider>
   )
 }
