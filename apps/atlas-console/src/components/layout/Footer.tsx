@@ -1,5 +1,4 @@
 import { useState } from 'react';
-import { ChevronUp, ChevronDown, Activity, Shield, Cpu, Zap, Box } from 'lucide-react';
 import { ChevronUp, ChevronDown, Shield, Zap, Box } from 'lucide-react';
 
 export default function Footer() {
