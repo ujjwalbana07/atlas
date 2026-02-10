@@ -1,4 +1,4 @@
-# ATLAS — Advanced Trading Lifecycle & Audit System
+# ATLAS PRO — Advanced Trading Lifecycle & Audit System
 
 ATLAS is a **high-performance, event-driven trading platform** built to demonstrate how modern electronic trading systems are designed for **low latency, fault tolerance, scalability, and regulatory-grade auditability**.
 
@@ -64,7 +64,7 @@ ATLAS uses **Redpanda**, a Kafka-compatible streaming platform, for the followin
 ## 🖥️ Trading Console (Frontend)
 
 The ATLAS Console is a **Next.js + React** application designed to resemble professional trading terminals.
-- **Full Title**: **ATLAS** (Advanced Trading Lifecycle & Audit System)
+- **Full Title**: **ATLAS PRO** (Advanced Trading Lifecycle & Audit System)
 - **Primary Goal**: To provide a unified, terminal-style interface for institutional-grade trading, balancing complex data visualization with rapid execution.
 
 ### Features:

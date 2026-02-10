@@ -110,7 +110,7 @@ export default function Footer() {
                                     <Box className="h-6 w-6 text-primary transition-transform group-hover:scale-110" />
                                     <div className="absolute inset-0 bg-primary/40 blur-xl rounded-full opacity-0 group-hover:opacity-100 transition-opacity" />
                                 </div>
-                                <span className="font-black text-sm tracking-[0.3em] text-white">ATLAS</span>
+                                <span className="font-black text-sm tracking-[0.3em] text-white">ATLAS PRO</span>
                             </div>
                             <span className="text-[8px] font-black tracking-[0.1em] text-zinc-600 uppercase mt-0.5">
                                 Advanced Trading Lifecycle & Audit System
